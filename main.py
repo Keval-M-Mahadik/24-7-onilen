@@ -75,8 +75,8 @@ API_CONFIG = {
         },
     
     "📞 Number Info ": {
-            "url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=",
-            "prompt": "📞Send a 10 Digit Indian Number (Without+91) to Get🪪 information 💀     Example (9712073901)"
+            "url": "https://www.sahil.godstress.site/api/leak?key=NXTKIMAKICHUT&number=",
+            "prompt": "📞Send a 10 Digit Indian Number (With+91) to Get🪪 information 💀     Example (+919712073901)"
         },
     
     "📍PIN Code Lookup": {

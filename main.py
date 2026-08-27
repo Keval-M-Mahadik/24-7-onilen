@@ -25,9 +25,13 @@ threading.Thread(target=run_server, daemon=True).start()
 # CONFIGURATION
 # ==========================================
 USER_BOT_TOKEN = os.getenv("USER_BOT_TOKEN", "8771414496:AAFBw-cGZhExTMbkZcvecolcDxAV9nzpjt8")
-ADMIN_BOT_TOKEN = os.getenv("ADMIN_BOT_TOKEN", "8766550714:AAE2rUWxhf9jSIPCMIddkiNd7yz-3wKDxvM")
+ADMIN_BOT_TOKEN_1 = os.getenv("ADMIN_BOT_TOKEN_1", "8766550714:AAE2rUWxhf9jSIPCMIddkiNd7yz-3wKDxvM")
+ADMIN_BOT_TOKEN_2 = os.getenv("ADMIN_BOT_TOKEN_2", "8917509717:AAFe9u6wPV_FfQlVEBioAQC8e7AB5Q-wCAQ")
 
-ADMIN_USER_IDS = {8613123407}
+# Each admin bot can have its own authorized Telegram user/chat IDs.
+# Put the Telegram user ID(s) allowed to control each admin bot here.
+ADMIN_USER_IDS_1 = {8613123407}
+ADMIN_USER_IDS_2 = {7944799667}
 
 
 app = Flask(__name__)
@@ -69,14 +73,14 @@ WRONG_PASSWORD_COOLDOWN = 60 * 60
 API_CONFIG = {
 
 
-    "🪪 Aadhaar Info ": {
+     "🪪 Aadhaar Info ": {
             "url": "https://travelers-creature-sarah-rogers.trycloudflare.com/search?q=",
             "prompt": "🪪 Send a 12 Digit Aadhaar Number to Get🪪 information 💀"
         },
     
     "📞 Number Info ": {
-            "url": "https://www.sahil.godstress.site/api/leak?key=NXTKIMAKICHUT&number=",
-            "prompt": "📞Send a 10 Digit Indian Number (Without +) to Get🪪 information 💀     Example (919712073901)"
+            "url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=",
+            "prompt": "📞Send a 10 Digit Indian Number (Without +91) to Get🪪 information 💀     Example (9712073901)"
         },
     
     "📍PIN Code Lookup": {
@@ -142,6 +146,7 @@ API_CONFIG = {
             "url": "https://anon-social-info.vercel.app/igdl?&url=",
             "prompt": "coming soon"
         }
+        
 }
 
 
@@ -180,10 +185,10 @@ USER_TELEGRAM_API = (
     + USER_BOT_TOKEN
 )
 
-ADMIN_TELEGRAM_API = (
-    "https://api.telegram.org/bot"
-    + ADMIN_BOT_TOKEN
-)
+ADMIN_TELEGRAM_APIS = {
+    1: "https://api.telegram.org/bot" + ADMIN_BOT_TOKEN_1,
+    2: "https://api.telegram.org/bot" + ADMIN_BOT_TOKEN_2,
+}
 
 
 # ============================================================
@@ -638,6 +643,10 @@ def start_activation(chat_id):
     send_message(
         chat_id,
         "🔐 Activation Required\n\n"
+        "First join our group back up: https://t.me/+fmsQBKZBcwc0M2E1\n\n"
+        "also join our channel: https://t.me/+xoBZcNpp76QyM2E1\n\n"
+        "You just need to join our group to activate the bot.\n\n"
+        "talk with Admin he give you the password free no payment\n\n"
         "Please enter your activation password.\n\n"
         "⚠️ If the password is incorrect, "
         "activation will be locked for 1 hour.\n\n"
@@ -1358,59 +1367,60 @@ def process_update(update):
 
 
 # ============================================================
-# ADMIN BOT
+# ADMIN BOTS (TWO SEPARATE ADMIN BOTS)
 # ============================================================
 
-def admin_send_message(chat_id, text):
-    """Send a message only through the separate ADMIN bot."""
-    url = ADMIN_TELEGRAM_API + "/sendMessage"
+def admin_send_message(bot_number, chat_id, text):
+    """Send a message through ADMIN BOT 1 or ADMIN BOT 2."""
+    api = ADMIN_TELEGRAM_APIS.get(bot_number)
+    if not api:
+        return None
 
     try:
         response = HTTP.post(
-            url,
+            api + "/sendMessage",
             data={
                 "chat_id": chat_id,
                 "text": text
             },
             timeout=(TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT)
         )
-
         response.raise_for_status()
         return response.json()
 
     except Exception as error:
-        print("Admin Telegram error:", error)
+        print(f"Admin bot {bot_number} Telegram error:", error)
         return None
 
 
-def admin_get_updates(offset=None):
-    """Read updates from the separate ADMIN bot."""
-    url = ADMIN_TELEGRAM_API + "/getUpdates"
+def admin_get_updates(bot_number, offset=None):
+    """Read updates from ADMIN BOT 1 or ADMIN BOT 2."""
+    api = ADMIN_TELEGRAM_APIS.get(bot_number)
+    if not api:
+        return None
 
-    params = {
-        "timeout": 30
-    }
+    params = {"timeout": 30}
 
     if offset is not None:
         params["offset"] = offset
 
     try:
         response = HTTP.get(
-            url,
+            api + "/getUpdates",
             params=params,
             timeout=(TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT)
         )
-
         response.raise_for_status()
         return response.json()
 
     except Exception as error:
-        print("Admin getUpdates error:", error)
+        print(f"Admin bot {bot_number} getUpdates error:", error)
         return None
 
 
-def admin_help(chat_id):
+def admin_help(bot_number, chat_id):
     admin_send_message(
+        bot_number,
         chat_id,
         "🛠 ADMIN PANEL\n\n"
         "/generate USER_ID - Generate a unique password\n"
@@ -1418,14 +1428,15 @@ def admin_help(chat_id):
         "/revoke USER_ID - Revoke unused password\n"
         "/deactivate USER_ID - Deactivate a user\n"
         "/help - Show this menu\n\n"
-        "🔐 Passwords are shown only in this ADMIN bot.\n"
+        "🔐 Passwords are shown only in the ADMIN bot.\n"
         "👤 The USER bot never displays generated passwords."
     )
 
 
-def admin_list_passwords(chat_id):
+def admin_list_passwords(bot_number, chat_id):
     if not ACTIVATION_PASSWORDS:
         admin_send_message(
+            bot_number,
             chat_id,
             "📭 No activation password records."
         )
@@ -1443,10 +1454,10 @@ def admin_list_passwords(chat_id):
             f"📌 Status: {status}\n"
         )
 
-    admin_send_message(chat_id, "\n".join(lines))
+    admin_send_message(bot_number, chat_id, "\n".join(lines))
 
 
-def process_admin_update(update):
+def process_admin_update(bot_number, update):
     if "message" not in update:
         return
 
@@ -1458,22 +1469,30 @@ def process_admin_update(update):
     if chat_id is None or not isinstance(text, str):
         return
 
-    # Admin access is checked against the Telegram user ID.
-    if chat_id not in ADMIN_USER_IDS:
+    # Admin access is checked against the Telegram user ID
+    # assigned specifically to this admin bot.
+    allowed_admin_ids = (
+        ADMIN_USER_IDS_1
+        if bot_number == 1
+        else ADMIN_USER_IDS_2
+    )
+
+    if chat_id not in allowed_admin_ids:
         admin_send_message(
+            bot_number,
             chat_id,
-            "⛔ You are not authorized to use the admin bot."
+            "⛔ You are not authorized to use this admin bot."
         )
         return
 
     text = text.strip()
 
     if text in ("/start", "/help"):
-        admin_help(chat_id)
+        admin_help(bot_number, chat_id)
         return
 
     if text == "/list":
-        admin_list_passwords(chat_id)
+        admin_list_passwords(bot_number, chat_id)
         return
 
     if text.startswith("/generate"):
@@ -1481,6 +1500,7 @@ def process_admin_update(update):
 
         if len(parts) != 2:
             admin_send_message(
+                bot_number,
                 chat_id,
                 "Usage:\n/generate USER_ID\n\n"
                 "Example:\n/generate 123456789"
@@ -1490,19 +1510,25 @@ def process_admin_update(update):
         target_user_id = normalize_user_id(parts[1])
 
         if target_user_id is None:
-            admin_send_message(chat_id, "❌ Invalid Telegram user ID.")
+            admin_send_message(
+                bot_number,
+                chat_id,
+                "❌ Invalid Telegram user ID."
+            )
             return
 
         password, error = admin_generate_password(target_user_id)
 
         if error:
             admin_send_message(
+                bot_number,
                 chat_id,
                 "❌ " + error
             )
             return
 
         admin_send_message(
+            bot_number,
             chat_id,
             "✅ NEW ACTIVATION PASSWORD\n\n"
             f"👤 User ID: {target_user_id}\n"
@@ -1518,6 +1544,7 @@ def process_admin_update(update):
 
         if len(parts) != 2:
             admin_send_message(
+                bot_number,
                 chat_id,
                 "Usage:\n/revoke USER_ID"
             )
@@ -1526,6 +1553,7 @@ def process_admin_update(update):
         ok, message_text = admin_revoke_password(parts[1])
 
         admin_send_message(
+            bot_number,
             chat_id,
             ("✅ " if ok else "❌ ") + message_text
         )
@@ -1536,6 +1564,7 @@ def process_admin_update(update):
 
         if len(parts) != 2:
             admin_send_message(
+                bot_number,
                 chat_id,
                 "Usage:\n/deactivate USER_ID"
             )
@@ -1544,7 +1573,11 @@ def process_admin_update(update):
         target_user_id = normalize_user_id(parts[1])
 
         if target_user_id is None:
-            admin_send_message(chat_id, "❌ Invalid Telegram user ID.")
+            admin_send_message(
+                bot_number,
+                chat_id,
+                "❌ Invalid Telegram user ID."
+            )
             return
 
         ACTIVATED_USERS.discard(target_user_id)
@@ -1552,6 +1585,7 @@ def process_admin_update(update):
         save_activation_data()
 
         admin_send_message(
+            bot_number,
             chat_id,
             f"🔒 User {target_user_id} has been deactivated.\n\n"
             "Generate a NEW password if they need to activate again."
@@ -1559,27 +1593,28 @@ def process_admin_update(update):
         return
 
     admin_send_message(
+        bot_number,
         chat_id,
         "❓ Unknown command.\n\nUse /help."
     )
 
 
-def admin_bot_loop():
-    """Long-polling loop for the separate ADMIN bot."""
-    print("Admin bot polling active.")
+def admin_bot_loop(bot_number):
+    """Long-polling loop for one of the two separate ADMIN bots."""
+    print(f"Admin bot {bot_number} polling active.")
 
     offset = None
 
     while True:
         try:
-            result = admin_get_updates(offset)
+            result = admin_get_updates(bot_number, offset)
 
             if result is None:
                 time.sleep(3)
                 continue
 
             if not result.get("ok"):
-                print("Admin Telegram API error:", result)
+                print(f"Admin bot {bot_number} Telegram API error:", result)
                 time.sleep(3)
                 continue
 
@@ -1590,12 +1625,15 @@ def admin_bot_loop():
                     offset = update_id + 1
 
                 try:
-                    process_admin_update(update)
+                    process_admin_update(bot_number, update)
                 except Exception as error:
-                    print("Admin processing error:", error)
+                    print(
+                        f"Admin bot {bot_number} processing error:",
+                        error
+                    )
 
         except Exception as error:
-            print("Admin loop error:", error)
+            print(f"Admin bot {bot_number} loop error:", error)
             time.sleep(3)
 
 
@@ -1630,11 +1668,10 @@ def main():
 
     if (
         not USER_BOT_TOKEN
-        or USER_BOT_TOKEN == "PUT_USER_BOT_TOKEN_HERE"
-        or not ADMIN_BOT_TOKEN
-        or ADMIN_BOT_TOKEN == "PUT_ADMIN_BOT_TOKEN_HERE"
+        or not ADMIN_BOT_TOKEN_1
+        or not ADMIN_BOT_TOKEN_2
     ):
-        print("ERROR: Set both bot tokens first.")
+        print("ERROR: Set USER_BOT_TOKEN, ADMIN_BOT_TOKEN_1 and ADMIN_BOT_TOKEN_2.")
         return
 
 
@@ -1688,14 +1725,15 @@ def main():
         return
 
 
-    # Start the admin poller only after configuration and
-    # user-bot connectivity have been validated.
-    admin_thread = threading.Thread(
-        target=admin_bot_loop,
-        name="admin-bot",
-        daemon=True
-    )
-    admin_thread.start()
+    # Start BOTH admin pollers.
+    for bot_number in (1, 2):
+        admin_thread = threading.Thread(
+            target=admin_bot_loop,
+            args=(bot_number,),
+            name=f"admin-bot-{bot_number}",
+            daemon=True
+        )
+        admin_thread.start()
 
 
     # ========================================================
@@ -1728,7 +1766,15 @@ def main():
     )
 
     print(
-        "Long polling active"
+        "Long polling active (USER BOT + ADMIN BOT 1 + ADMIN BOT 2)"
+    )
+    print(
+        "Admin Bot 1 authorized IDs:",
+        sorted(ADMIN_USER_IDS_1)
+    )
+    print(
+        "Admin Bot 2 authorized IDs:",
+        sorted(ADMIN_USER_IDS_2)
     )
 
     print("=" * 60)

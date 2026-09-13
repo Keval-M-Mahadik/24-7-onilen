@@ -1,19 +1,40 @@
 import os
 import json
 import time
+import hmac
+import hashlib
 import threading
-from flask import Flask
 import requests
+import qrcode
+from io import BytesIO
+from flask import Flask, request, jsonify
 from urllib.parse import quote_plus
+from requests.adapters import HTTPAdapter
 
 # ==========================================
-# RENDER PORT FIX (Port Scan Error समाधान)
+# FLASK SETUP
 # ==========================================
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot status: Active"
+    return "Bot is running successfully!"
+
+@app.route('/test-min')
+def test_min():
+    out = {}
+    for code in ("ltc", "trx", "usdttrc20", "btc", "eth"):
+        mn, mf = get_min_amount(code, "usd")
+        out[code] = {"min_amount": mn, "min_fiat_usd": mf}
+    return jsonify(out)
+
+@app.route('/test-currencies')
+def test_currencies():
+    lst = fetch_all_currencies()
+    return jsonify({
+        "count": len(lst),
+        "sample": [{"code": c["code"], "name": c["name"]} for c in lst[:25]]
+    })
 
 def run_server():
     port = int(os.environ.get("PORT", 8080))
@@ -24,1855 +45,1801 @@ threading.Thread(target=run_server, daemon=True).start()
 # ==========================================
 # CONFIGURATION
 # ==========================================
-USER_BOT_TOKEN = os.getenv("USER_BOT_TOKEN", "8771414496:AAFBw-cGZhExTMbkZcvecolcDxAV9nzpjt8")
+USER_BOT_TOKEN = os.getenv("USER_BOT_TOKEN", "8771414496:AAEZYXZa3TXHPcJoEYxHmI105c60F8VSYxo")
 ADMIN_BOT_TOKEN_1 = os.getenv("ADMIN_BOT_TOKEN_1", "8766550714:AAE2rUWxhf9jSIPCMIddkiNd7yz-3wKDxvM")
-ADMIN_BOT_TOKEN_2 = os.getenv("ADMIN_BOT_TOKEN_2", "8917509717:AAFe9u6wPV_FfQlVEBioAQC8e7AB5Q-wCAQ")
-
-# Each admin bot can have its own authorized Telegram user/chat IDs.
-# Put the Telegram user ID(s) allowed to control each admin bot here.
 ADMIN_USER_IDS_1 = {8613123407}
-ADMIN_USER_IDS_2 = {7944799667}
 
+NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY", "ZQRJG4Z-5PQ48ZM-M5C8PVH-V01CXT0")
+NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET", "Gsx0umqAvAcrfOGfEOguqrL9UjhmoHoH")
 
-app = Flask(__name__)
+IPN_CALLBACK_URL = os.getenv("IPN_CALLBACK_URL", "https://osint.onrender.com/nowpayments_webhook")
 
-@app.route('/')
-def home():
-    return "Bot is running successfully!"
+NOWPAYMENTS_API_URL = "https://api.nowpayments.io/v1"
 
-def run_server():
-    # Use port assigned by Render or default to 8080
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
-
-# Start web server in a background thread
-threading.Thread(target=run_server, daemon=True).start()
-
-PASSWORD_DB_FILE = "activation_passwords.json"
-
-# Wrong password = 1 hour cooldown
-WRONG_PASSWORD_COOLDOWN = 60 * 60
-
-
-# ============================================================
-# AUTHORIZED API CONFIGURATION
-# ============================================================
-#
-# Put only APIs that you own or are explicitly authorized
-# to query.
-#
-# Example:
-#
-# "Example API": {
-#     "url": "https://your-domain.example/search?query=",
-#     "prompt": "Send your authorized reference:"
-# }
-#
-# ============================================================
-
-API_CONFIG = {
-
-
-     "🪪 Aadhaar Info ": {
-            "url": "https://travelers-creature-sarah-rogers.trycloudflare.com/search?q=",
-            "prompt": "🪪 Send a 12 Digit Aadhaar Number to Get🪪 information 💀"
-        },
-    
-    "📞 Number Info ": {
-            "url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=",
-            "prompt": "📞Send a 10 Digit Indian Number (Without +91) to Get🪪 information 💀     Example (9712073901)"
-        },
-    
-    "📍PIN Code Lookup": {
-            "url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=",
-            "prompt": "📍 Send PIN code to get information 💀 (number)"
-        },
-    "🚘 Vehicle Info": {
-                "url": "https://parivahan-x.paskhinpf9.workers.dev/?vehicle=",
-                "prompt": "🚘 Send Vehicle Number 2.0 to get information💀(write in small letters)"
-            },
-    
-    "🚘 Vehicle Info 2.0": {
-            "url": "https://parivahan-x.paskhinpf9.workers.dev/?vehicle=",
-            "prompt": "🚘 Send Vehicle Number 2.0 to get information💀(write in small letters)"
-        },
-    
-    "🤖 Telegram ID / Username ": {
-            "url": "https://anon-tg-info.vercel.app/telegram?key=temp1750&username=",
-            "prompt": "🤖 Send the authorized Telegram username:"
-        },
-    
-    "🆔 PAN Info ": {
-            "url": "https://paninfo.noob73613.workers.dev/pan?pan=",
-            "prompt": "🆔 Send the authorized PAN reference:"
-        },
-    
-    "📱 Telegram Chat ID ": {
-            "url": "https://anon-tg-info.vercel.app/tgReg_beta?userid=",
-            "prompt": "📱 Send the authorized Chat ID:"
-        },
-    
-    "💳 IFSC Info ": {
-            "url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=",
-            "prompt": "💳 Send the IFSC code number:-"
-        },
-    
-    "🏦 UPI INFO ": {
-            "url": "https://upi-id-to-info-by-abhigyan.onrender.com/upi/<UPI_ID>",
-            "prompt": "🏦 Send the authorized UPI ID:"
-        },
-    
-    "🇵🇰 Pakistan Number Info ": {
-            "url": "https://YOUR-AUTHORIZED-API.example/pakistan-number?query=",
-            "prompt": "coming soon"
-        },
-    
-    "📧 Advanced Email Info ": {
-            "url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=",
-            "prompt": "📧 Send the authorized email:"
-        },
-    
-    "📈 GST Info Advanced": {
-            "url": "https://YOUR-AUTHORIZED-API.example/gst?query=",
-            "prompt": "coming soon"
-        },
-    
-    "🌐 IP Address Info": {
-            "url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=",
-            "prompt": "🌐 Send the IP address:"
-        },
-    
-    "👤 Instagram Username Info": {
-            "url": "https://anon-social-info.vercel.app/igdl?&url=",
-            "prompt": "coming soon"
-        }
-        
+PLANS = {
+    "plan_1": {"name": "1 Month",  "price_usd": 13.00, "days": 30},
+    "plan_2": {"name": "3 Months", "price_usd": 18.00, "days": 90},
+    "plan_3": {"name": "6 Months", "price_usd": 25.00, "days": 180},
+    "plan_4": {"name": "1 Year",   "price_usd": 35.00, "days": 365},
 }
 
+DB_FILE = "activation_data.json"
+db_lock = threading.Lock()
+
+MIN_AMOUNT_CACHE = {}
+MIN_AMOUNT_CACHE_TTL = 600
+
+CURRENCY_CACHE = {"list": [], "ts": 0}
+CURRENCY_CACHE_TTL = 3600
+
+CURRENCY_PAGE_SIZE = 20
+
+FIAT_FALLBACK = [
+    ("usd", "US Dollar"), ("eur", "Euro"), ("gbp", "British Pound"),
+    ("inr", "Indian Rupee"), ("aud", "Australian Dollar"), ("cad", "Canadian Dollar"),
+    ("jpy", "Japanese Yen"), ("cny", "Chinese Yuan"), ("chf", "Swiss Franc"),
+    ("sgd", "Singapore Dollar"), ("hkd", "Hong Kong Dollar"), ("nzd", "New Zealand Dollar"),
+    ("krw", "South Korean Won"), ("brl", "Brazilian Real"), ("mxn", "Mexican Peso"),
+    ("zar", "South African Rand"), ("rub", "Russian Ruble"), ("try", "Turkish Lira"),
+    ("aed", "UAE Dirham"), ("sar", "Saudi Riyal"), ("qar", "Qatari Riyal"),
+    ("kwd", "Kuwaiti Dinar"), ("bhd", "Bahraini Dinar"), ("omr", "Omani Rial"),
+    ("pkr", "Pakistani Rupee"), ("bdt", "Bangladeshi Taka"), ("lkr", "Sri Lankan Rupee"),
+    ("npr", "Nepalese Rupee"), ("idr", "Indonesian Rupiah"), ("myr", "Malaysian Ringgit"),
+    ("thb", "Thai Baht"), ("php", "Philippine Peso"), ("vnd", "Vietnamese Dong"),
+    ("ngn", "Nigerian Naira"), ("kes", "Kenyan Shilling"), ("ghs", "Ghanaian Cedi"),
+    ("egp", "Egyptian Pound"), ("mad", "Moroccan Dirham"), ("dzd", "Algerian Dinar"),
+    ("tnd", "Tunisian Dinar"), ("ils", "Israeli Shekel"), ("pln", "Polish Zloty"),
+    ("sek", "Swedish Krona"), ("nok", "Norwegian Krone"), ("dkk", "Danish Krone"),
+    ("czk", "Czech Koruna"), ("huf", "Hungarian Forint"), ("ron", "Romanian Leu"),
+    ("uah", "Ukrainian Hryvnia"), ("ars", "Argentine Peso"), ("clp", "Chilean Peso"),
+    ("cop", "Colombian Peso"), ("pen", "Peruvian Sol"), ("twd", "New Taiwan Dollar"),
+    ("irr", "Iranian Rial"), ("iqd", "Iraqi Dinar"), ("jod", "Jordanian Dinar"),
+    ("afn", "Afghan Afghani"), ("mmk", "Myanmar Kyat"), ("khr", "Cambodian Riel"),
+    ("bgn", "Bulgarian Lev"), ("hrk", "Croatian Kuna"), ("isk", "Icelandic Krona"),
+    ("kzt", "Kazakhstani Tenge"), ("uzs", "Uzbekistani Som"), ("azn", "Azerbaijani Manat"),
+    ("gel", "Georgian Lari"), ("amd", "Armenian Dram"), ("rsd", "Serbian Dinar"),
+    ("mnt", "Mongolian Tugrik"), ("etb", "Ethiopian Birr"), ("ugx", "Ugandan Shilling"),
+    ("tzs", "Tanzanian Shilling"), ("xof", "West African CFA Franc"),
+]
+
+POPULAR_CODES = [
+    "btc", "eth", "usdttrc20", "usdterc20", "usdc", "ltc", "trx", "bnb",
+    "sol", "doge", "xrp", "ada", "matic", "ton", "shib", "dai", "busd",
+]
 
 # ============================================================
-# HTTP SESSION / PERFORMANCE
+# LANGUAGE / i18n
 # ============================================================
+LANGUAGES = {
+    "en": "🇬🇧 English",
+    "hi": "🇮🇳 हिन्दी",
+    "bn": "🇧🇩 বাংলা",
+    "ur": "🇵🇰 اردو",
+    "ar": "🇸🇦 العربية",
+    "es": "🇪🇸 Español",
+    "fr": "🇫🇷 Français",
+    "de": "🇩🇪 Deutsch",
+    "pt": "🇧🇷 Português",
+    "ru": "🇷🇺 Русский",
+    "zh": "🇨🇳 中文",
+    "ja": "🇯🇵 日本語",
+    "ko": "🇰🇷 한국어",
+    "id": "🇮🇩 Indonesia",
+    "tr": "🇹🇷 Türkçe",
+    "fa": "🇮🇷 فارسی",
+    "it": "🇮🇹 Italiano",
+    "vi": "🇻🇳 Tiếng Việt",
+    "th": "🇹🇭 ไทย",
+    "ta": "🇮🇳 தமிழ்",
+    "te": "🇮🇳 తెలుగు",
+    "mr": "🇮🇳 मराठी",
+    "gu": "🇮🇳 ગુજરાતી",
+    "pa": "🇮🇳 ਪੰਜਾਬੀ",
+    "ml": "🇮🇳 മലയാളം",
+    "nl": "🇳🇱 Nederlands",
+    "pl": "🇵🇱 Polski",
+    "uk": "🇺🇦 Українська",
+    "ro": "🇷🇴 Română",
+    "sw": "🇰🇪 Kiswahili",
+    "ms": "🇲🇾 Bahasa Melayu",
+    "fil": "🇵🇭 Filipino",
+}
 
-# requests.Session() reuses TCP/TLS connections, which is noticeably
-# faster when the bot handles many Telegram/API requests.
+LANG_BY_NAME = {v: k for k, v in LANGUAGES.items()}
+
+TEXTS = {
+    "en": {
+        "welcome": "👋 <b>Welcome!</b>",
+        "locked": "🔒 This bot is locked.",
+        "buy_plan": "Please purchase a plan to activate.",
+        "select_feature": "Select a feature:",
+        "already_active": "✅ You are already activated.",
+        "status_active": "✅ Status: <b>Active</b>",
+        "status_inactive": "❌ Status: <b>Inactive / Expired</b>",
+        "expiry": "Expiry",
+        "cancelled": "❌ Cancelled.",
+        "deactivated": "🔒 Bot deactivated.",
+        "deactivated_msg": "🔒 Bot deactivated. Purchase a plan to reactivate.",
+        "select_plan": "Select a plan:",
+        "checking": "🔎 Checking available currencies...",
+        "no_crypto": "❌ No currencies available right now.",
+        "generating": "⏳ Generating payment invoice...",
+        "payment_confirmed": "✅ <b>Payment Confirmed!</b>",
+        "activated_days": "Your bot has been activated for <b>{days} days</b>.",
+        "payment_api_error": "❌ <b>Payment API error</b>",
+        "try_again": "Please try again or contact admin.",
+        "select_currency": "Choose a payment currency for <b>{plan}</b> (${price}):",
+        "choose_language": "🌐 <b>Please choose your language:</b>",
+        "language_set": "✅ Language updated.",
+        "send_cancel": "Send /cancel to cancel.",
+        "searching": "⏳ Searching...",
+        "no_result": "❌ No result or API error.",
+        "select_option": "❓ Please select an option from the menu.",
+        "search_currency": "🔍 Search",
+        "all_currencies": "📋 All Currencies",
+        "back": "🔙 Back",
+        "cancel_btn": "❌ Cancel",
+        "deactivate_btn": "🔒 Deactivate",
+        "check_status_btn": "🔄 Check Status",
+        "lang_btn": "🌐 Language",
+        "not_available": "❌ That currency is not available.",
+        "payment_timeout": "⏱ Payment API timed out. Please try again.",
+        "send_currency_code": "🔍 Type a currency code or name (e.g. BTC, ETH, USDT, Euro, INR):",
+        "found_currencies": "Found {n} matching currencies:",
+        "no_match": "❌ No matching currency found. Try another code.",
+        "send_amount": "💰 Send <b>{amount} {currency}</b> to:",
+        "popular": "⭐ Popular currencies:",
+        "plan_1": "1 Month",
+        "plan_2": "3 Months",
+        "plan_3": "6 Months",
+        "plan_4": "1 Year",
+        "bumped_note": "ℹ️ Amount adjusted to meet the network minimum.",
+        "currency_unsupported": "⚠️ This currency may not be supported for payments. Please try another.",
+    },
+    "hi": {
+        "welcome": "👋 <b>स्वागत है!</b>",
+        "locked": "🔒 यह बॉट लॉक है।",
+        "buy_plan": "सक्रिय करने के लिए कृपया एक प्लान खरीदें।",
+        "select_feature": "एक सुविधा चुनें:",
+        "already_active": "✅ आप पहले से सक्रिय हैं।",
+        "status_active": "✅ स्थिति: <b>सक्रिय</b>",
+        "status_inactive": "❌ स्थिति: <b>निष्क्रिय / समाप्त</b>",
+        "expiry": "समाप्ति",
+        "cancelled": "❌ रद्द किया गया।",
+        "deactivated": "🔒 बॉट निष्क्रिय कर दिया गया।",
+        "deactivated_msg": "🔒 बॉट निष्क्रिय। दोबारा सक्रिय करने के लिए प्लान खरीदें।",
+        "select_plan": "एक प्लान चुनें:",
+        "checking": "🔎 उपलब्ध मुद्राएँ जाँच रहे हैं...",
+        "no_crypto": "❌ अभी कोई मुद्रा उपलब्ध नहीं है।",
+        "generating": "⏳ भुगतान इनवॉइस बना रहे हैं...",
+        "payment_confirmed": "✅ <b>भुगतान की पुष्टि हो गई!</b>",
+        "activated_days": "आपका बॉट <b>{days} दिनों</b> के लिए सक्रिय कर दिया गया है।",
+        "payment_api_error": "❌ <b>भुगतान API त्रुटि</b>",
+        "try_again": "कृपया पुनः प्रयास करें या एडमिन से संपर्क करें।",
+        "select_currency": "<b>{plan}</b> (${price}) के लिए भुगतान मुद्रा चुनें:",
+        "choose_language": "🌐 <b>कृपया अपनी भाषा चुनें:</b>",
+        "language_set": "✅ भाषा अपडेट हो गई।",
+        "send_cancel": "रद्द करने के लिए /cancel भेजें।",
+        "searching": "⏳ खोज रहे हैं...",
+        "no_result": "❌ कोई परिणाम नहीं या API त्रुटि।",
+        "select_option": "❓ कृपया मेनू से एक विकल्प चुनें।",
+        "search_currency": "🔍 खोजें",
+        "all_currencies": "📋 सभी मुद्राएँ",
+        "back": "🔙 वापस",
+        "cancel_btn": "❌ रद्द करें",
+        "deactivate_btn": "🔒 निष्क्रिय करें",
+        "check_status_btn": "🔄 स्थिति देखें",
+        "lang_btn": "🌐 भाषा",
+        "not_available": "❌ वह मुद्रा उपलब्ध नहीं है।",
+        "payment_timeout": "⏱ भुगतान API का समय समाप्त। पुनः प्रयास करें।",
+        "send_currency_code": "🔍 मुद्रा कोड या नाम लिखें (जैसे BTC, ETH, USDT, Euro, INR):",
+        "found_currencies": "{n} मिलती-जुलती मुद्राएँ मिलीं:",
+        "no_match": "❌ कोई मेल खाती मुद्रा नहीं मिली।",
+        "send_amount": "💰 <b>{amount} {currency}</b> भेजें:",
+        "popular": "⭐ लोकप्रिय मुद्राएँ:",
+        "plan_1": "1 महीना", "plan_2": "3 महीने", "plan_3": "6 महीने", "plan_4": "1 वर्ष",
+        "bumped_note": "ℹ️ नेटवर्क न्यूनतम के अनुसार राशि समायोजित की गई।",
+        "currency_unsupported": "⚠️ यह मुद्रा भुगतान के लिए समर्थित नहीं हो सकती। कृपया दूसरी चुनें।",
+    },
+    "bn": {
+        "welcome": "👋 <b>স্বাগতম!</b>",
+        "locked": "🔒 এই বটটি লক করা আছে।",
+        "buy_plan": "সক্রিয় করতে অনুগ্রহ করে একটি প্ল্যান কিনুন।",
+        "select_feature": "একটি বৈশিষ্ট্য নির্বাচন করুন:",
+        "already_active": "✅ আপনি ইতিমধ্যে সক্রিয় আছেন।",
+        "status_active": "✅ অবস্থা: <b>সক্রিয়</b>",
+        "status_inactive": "❌ অবস্থা: <b>নিষ্ক্রিয় / মেয়াদোত্তীর্ণ</b>",
+        "expiry": "মেয়াদ",
+        "cancelled": "❌ বাতিল করা হয়েছে।",
+        "deactivated": "🔒 বট নিষ্ক্রিয় করা হয়েছে।",
+        "deactivated_msg": "🔒 বট নিষ্ক্রিয়। পুনরায় সক্রিয় করতে একটি প্ল্যান কিনুন।",
+        "select_plan": "একটি প্ল্যান নির্বাচন করুন:",
+        "checking": "🔎 উপলব্ধ মুদ্রা পরীক্ষা করা হচ্ছে...",
+        "no_crypto": "❌ এখন কোনো মুদ্রা উপলব্ধ নেই।",
+        "generating": "⏳ পেমেন্ট ইনভয়েস তৈরি হচ্ছে...",
+        "payment_confirmed": "✅ <b>পেমেন্ট নিশ্চিত হয়েছে!</b>",
+        "activated_days": "আপনার বট <b>{days} দিনের</b> জন্য সক্রিয় করা হয়েছে।",
+        "payment_api_error": "❌ <b>পেমেন্ট API ত্রুটি</b>",
+        "try_again": "আবার চেষ্টা করুন বা অ্যাডমিনের সাথে যোগাযোগ করুন।",
+        "select_currency": "<b>{plan}</b> (${price}) এর জন্য পেমেন্ট মুদ্রা চুনুন:",
+        "choose_language": "🌐 <b>অনুগ্রহ করে আপনার ভাষা চুনুন:</b>",
+        "language_set": "✅ ভাষা আপডেট হয়েছে।",
+        "send_cancel": "বাতিল করতে /cancel পাঠান।",
+        "searching": "⏳ খোঁজা হচ্ছে...",
+        "no_result": "❌ কোনো ফলাফল নেই বা API ত্রুটি।",
+        "select_option": "❓ মেনু থেকে একটি বিকল্প চুনুন।",
+        "search_currency": "🔍 খুঁজুন",
+        "all_currencies": "📋 সব মুদ্রা",
+        "back": "🔙 পিছনে",
+        "cancel_btn": "❌ বাতিল",
+        "deactivate_btn": "🔒 নিষ্ক্রিয় করুন",
+        "check_status_btn": "🔄 অবস্থা দেখুন",
+        "lang_btn": "🌐 ভাষা",
+        "not_available": "❌ সেই মুদ্রা উপলব্ধ নয়।",
+        "payment_timeout": "⏱ পেমেন্ট API সময় শেষ। আবার চেষ্টা করুন।",
+        "send_currency_code": "🔍 একটি মুদ্রা কোড বা নাম লিখুন (যেমন BTC, ETH, USDT, Euro, INR):",
+        "found_currencies": "{n}টি মিলে যাওয়া মুদ্রা পাওয়া গেছে:",
+        "no_match": "❌ কোনো মিলে যাওয়া মুদ্রা পাওয়া যায়নি।",
+        "send_amount": "💰 <b>{amount} {currency}</b> পাঠান:",
+        "popular": "⭐ জনপ্রিয় মুদ্রা:",
+        "plan_1": "1 মাস", "plan_2": "3 মাস", "plan_3": "6 মাস", "plan_4": "1 বছর",
+        "bumped_note": "ℹ️ নেটওয়ার্ক ন্যূনতম অনুযায়ী পরিমাণ সমন্বয় করা হয়েছে।",
+        "currency_unsupported": "⚠️ এই মুদ্রা পেমেন্টের জন্য সমর্থিত নাও হতে পারে। অন্যটি চেষ্টা করুন।",
+    },
+    "ur": {
+        "welcome": "👋 <b>خوش آمدید!</b>",
+        "locked": "🔒 یہ بوٹ لاک ہے۔",
+        "buy_plan": "فعال کرنے کے لیے براہ کرم ایک پلان خریدیں۔",
+        "select_feature": "ایک خصوصیت منتخب کریں:",
+        "already_active": "✅ آپ پہلے سے فعال ہیں۔",
+        "status_active": "✅ حیثیت: <b>فعال</b>",
+        "status_inactive": "❌ حیثیت: <b>غیر فعال / ختم شدہ</b>",
+        "expiry": "میعاد",
+        "cancelled": "❌ منسوخ کر دیا گیا۔",
+        "deactivated": "🔒 بوٹ غیر فعال کر دیا گیا۔",
+        "deactivated_msg": "🔒 بوٹ غیر فعال۔ دوبارہ فعال کرنے کے لیے پلان خریدیں۔",
+        "select_plan": "ایک پلان منتخب کریں:",
+        "checking": "🔎 دستیاب کرنسیاں چیک کر رہے ہیں...",
+        "no_crypto": "❌ ابھی کوئی کرنسی دستیاب نہیں۔",
+        "generating": "⏳ ادائیگی انوائس بنائی جا رہی ہے...",
+        "payment_confirmed": "✅ <b>ادائیگی کی تصدیق ہو گئی!</b>",
+        "activated_days": "آپ کا بوٹ <b>{days} دنوں</b> کے لیے فعال کر دیا گیا ہے۔",
+        "payment_api_error": "❌ <b>ادائیگی API خرابی</b>",
+        "try_again": "دوبارہ کوشش کریں یا ایڈمن سے رابطہ کریں۔",
+        "select_currency": "<b>{plan}</b> (${price}) کے لیے ادائیگی کرنسی منتخب کریں:",
+        "choose_language": "🌐 <b>براہ کرم اپنی زبان منتخب کریں:</b>",
+        "language_set": "✅ زبان اپ ڈیٹ ہو گئی۔",
+        "send_cancel": "منسوخ کرنے کے لیے /cancel بھیجیں۔",
+        "searching": "⏳ تلاش کر رہے ہیں...",
+        "no_result": "❌ کوئی نتیجہ نہیں یا API خرابی۔",
+        "select_option": "❓ براہ کرم مینو سے ایک آپشن منتخب کریں۔",
+        "search_currency": "🔍 تلاش",
+        "all_currencies": "📋 تمام کرنسیاں",
+        "back": "🔙 واپس",
+        "cancel_btn": "❌ منسوخ",
+        "deactivate_btn": "🔒 غیر فعال کریں",
+        "check_status_btn": "🔄 حیثیت دیکھیں",
+        "lang_btn": "🌐 زبان",
+        "not_available": "❌ وہ کرنسی دستیاب نہیں۔",
+        "payment_timeout": "⏱ ادائیگی API کا وقت ختم۔ دوبارہ کوشش کریں۔",
+        "send_currency_code": "🔍 کرنسی کوڈ یا نام لکھیں (مثلاً BTC, ETH, USDT, Euro, INR):",
+        "found_currencies": "{n} ملتی جلتی کرنسیاں ملیں:",
+        "no_match": "❌ کوئی ملتی کرنسی نہیں ملی۔",
+        "send_amount": "💰 <b>{amount} {currency}</b> بھیجیں:",
+        "popular": "⭐ مقبول کرنسیاں:",
+        "plan_1": "1 ماہ", "plan_2": "3 ماہ", "plan_3": "6 ماہ", "plan_4": "1 سال",
+        "bumped_note": "ℹ️ نیٹ ورک کم از کم کے مطابق رقم ایڈجسٹ کی گئی۔",
+        "currency_unsupported": "⚠️ یہ کرنسی ادائیگی کے لیے معاون نہ ہو سکے۔ دوسری آزمائیں۔",
+    },
+    "ar": {
+        "welcome": "👋 <b>مرحباً!</b>",
+        "locked": "🔒 هذا البوت مقفل.",
+        "buy_plan": "يرجى شراء خطة للتنشيط.",
+        "select_feature": "اختر ميزة:",
+        "already_active": "✅ أنت مفعّل بالفعل.",
+        "status_active": "✅ الحالة: <b>نشط</b>",
+        "status_inactive": "❌ الحالة: <b>غير نشط / منتهي</b>",
+        "expiry": "الانتهاء",
+        "cancelled": "❌ تم الإلغاء.",
+        "deactivated": "🔒 تم إلغاء تنشيط البوت.",
+        "deactivated_msg": "🔒 البوت معطّل. اشترِ خطة لإعادة التنشيط.",
+        "select_plan": "اختر خطة:",
+        "checking": "🔎 جارٍ التحقق من العملات المتاحة...",
+        "no_crypto": "❌ لا توجد عملات متاحة الآن.",
+        "generating": "⏳ جارٍ إنشاء فاتورة الدفع...",
+        "payment_confirmed": "✅ <b>تم تأكيد الدفع!</b>",
+        "activated_days": "تم تنشيط البوت لمدة <b>{days} يومًا</b>.",
+        "payment_api_error": "❌ <b>خطأ في واجهة الدفع</b>",
+        "try_again": "يرجى المحاولة مرة أخرى أو الاتصال بالمسؤول.",
+        "select_currency": "اختر عملة الدفع لـ <b>{plan}</b> (${price}):",
+        "choose_language": "🌐 <b>يرجى اختيار لغتك:</b>",
+        "language_set": "✅ تم تحديث اللغة.",
+        "send_cancel": "أرسل /cancel للإلغاء.",
+        "searching": "⏳ جارٍ البحث...",
+        "no_result": "❌ لا نتيجة أو خطأ في الواجهة.",
+        "select_option": "❓ يرجى اختيار خيار من القائمة.",
+        "search_currency": "🔍 بحث",
+        "all_currencies": "📋 كل العملات",
+        "back": "🔙 رجوع",
+        "cancel_btn": "❌ إلغاء",
+        "deactivate_btn": "🔒 إلغاء التنشيط",
+        "check_status_btn": "🔄 التحقق من الحالة",
+        "lang_btn": "🌐 اللغة",
+        "not_available": "❌ هذه العملة غير متاحة.",
+        "payment_timeout": "⏱ انتهت مهلة الدفع. حاول مرة أخرى.",
+        "send_currency_code": "🔍 اكتب رمز أو اسم العملة (مثل BTC, ETH, USDT, Euro, INR):",
+        "found_currencies": "تم العثور على {n} عملة مطابقة:",
+        "no_match": "❌ لم يتم العثور على عملة مطابقة.",
+        "send_amount": "💰 أرسل <b>{amount} {currency}</b> إلى:",
+        "popular": "⭐ العملات الشائعة:",
+        "plan_1": "شهر واحد", "plan_2": "3 أشهر", "plan_3": "6 أشهر", "plan_4": "سنة واحدة",
+        "bumped_note": "ℹ️ تم تعديل المبلغ لتلبية الحد الأدنى للشبكة.",
+        "currency_unsupported": "⚠️ قد لا تكون هذه العملة مدعومة للدفع. جرّب أخرى.",
+    },
+    "es": {
+        "welcome": "👋 <b>¡Bienvenido!</b>",
+        "locked": "🔒 Este bot está bloqueado.",
+        "buy_plan": "Compra un plan para activarlo.",
+        "select_feature": "Selecciona una función:",
+        "already_active": "✅ Ya estás activado.",
+        "status_active": "✅ Estado: <b>Activo</b>",
+        "status_inactive": "❌ Estado: <b>Inactivo / Expirado</b>",
+        "expiry": "Expiración",
+        "cancelled": "❌ Cancelado.",
+        "deactivated": "🔒 Bot desactivado.",
+        "deactivated_msg": "🔒 Bot desactivado. Compra un plan para reactivar.",
+        "select_plan": "Selecciona un plan:",
+        "checking": "🔎 Comprobando monedas disponibles...",
+        "no_crypto": "❌ No hay monedas disponibles ahora mismo.",
+        "generating": "⏳ Generando factura de pago...",
+        "payment_confirmed": "✅ <b>¡Pago confirmado!</b>",
+        "activated_days": "Tu bot ha sido activado por <b>{days} días</b>.",
+        "payment_api_error": "❌ <b>Error de la API de pago</b>",
+        "try_again": "Inténtalo de nuevo o contacta al administrador.",
+        "select_currency": "Elige una moneda de pago para <b>{plan}</b> (${price}):",
+        "choose_language": "🌐 <b>Elige tu idioma:</b>",
+        "language_set": "✅ Idioma actualizado.",
+        "send_cancel": "Envía /cancel para cancelar.",
+        "searching": "⏳ Buscando...",
+        "no_result": "❌ Sin resultados o error de API.",
+        "select_option": "❓ Selecciona una opción del menú.",
+        "search_currency": "🔍 Buscar",
+        "all_currencies": "📋 Todas las monedas",
+        "back": "🔙 Atrás",
+        "cancel_btn": "❌ Cancelar",
+        "deactivate_btn": "🔒 Desactivar",
+        "check_status_btn": "🔄 Ver estado",
+        "lang_btn": "🌐 Idioma",
+        "not_available": "❌ Esa moneda no está disponible.",
+        "payment_timeout": "⏱ La API de pago agotó el tiempo. Inténtalo de nuevo.",
+        "send_currency_code": "🔍 Escribe un código o nombre de moneda (p. ej. BTC, ETH, USDT, Euro):",
+        "found_currencies": "Se encontraron {n} monedas coincidentes:",
+        "no_match": "❌ No se encontró ninguna moneda coincidente.",
+        "send_amount": "💰 Envía <b>{amount} {currency}</b> a:",
+        "popular": "⭐ Monedas populares:",
+        "plan_1": "1 Mes", "plan_2": "3 Meses", "plan_3": "6 Meses", "plan_4": "1 Año",
+        "bumped_note": "ℹ️ Importe ajustado para cumplir el mínimo de la red.",
+        "currency_unsupported": "⚠️ Es posible que esta moneda no sea compatible. Prueba otra.",
+    },
+    "fr": {
+        "welcome": "👋 <b>Bienvenue !</b>",
+        "locked": "🔒 Ce bot est verrouillé.",
+        "buy_plan": "Veuillez acheter un forfait pour l'activer.",
+        "select_feature": "Sélectionnez une fonction :",
+        "already_active": "✅ Vous êtes déjà activé.",
+        "status_active": "✅ Statut : <b>Actif</b>",
+        "status_inactive": "❌ Statut : <b>Inactif / Expiré</b>",
+        "expiry": "Expiration",
+        "cancelled": "❌ Annulé.",
+        "deactivated": "🔒 Bot désactivé.",
+        "deactivated_msg": "🔒 Bot désactivé. Achetez un forfait pour réactiver.",
+        "select_plan": "Sélectionnez un forfait :",
+        "checking": "🔎 Vérification des devises disponibles...",
+        "no_crypto": "❌ Aucune devise disponible pour le moment.",
+        "generating": "⏳ Génération de la facture...",
+        "payment_confirmed": "✅ <b>Paiement confirmé !</b>",
+        "activated_days": "Votre bot a été activé pour <b>{days} jours</b>.",
+        "payment_api_error": "❌ <b>Erreur de l'API de paiement</b>",
+        "try_again": "Réessayez ou contactez l'administrateur.",
+        "select_currency": "Choisissez une devise de paiement pour <b>{plan}</b> (${price}) :",
+        "choose_language": "🌐 <b>Choisissez votre langue :</b>",
+        "language_set": "✅ Langue mise à jour.",
+        "send_cancel": "Envoyez /cancel pour annuler.",
+        "searching": "⏳ Recherche...",
+        "no_result": "❌ Aucun résultat ou erreur API.",
+        "select_option": "❓ Veuillez choisir une option du menu.",
+        "search_currency": "🔍 Rechercher",
+        "all_currencies": "📋 Toutes les devises",
+        "back": "🔙 Retour",
+        "cancel_btn": "❌ Annuler",
+        "deactivate_btn": "🔒 Désactiver",
+        "check_status_btn": "🔄 Vérifier le statut",
+        "lang_btn": "🌐 Langue",
+        "not_available": "❌ Cette devise n'est pas disponible.",
+        "payment_timeout": "⏱ Délai de l'API de paiement dépassé. Réessayez.",
+        "send_currency_code": "🔍 Saisissez un code ou nom de devise (ex. BTC, ETH, USDT, Euro) :",
+        "found_currencies": "{n} devises correspondantes trouvées :",
+        "no_match": "❌ Aucune devise correspondante trouvée.",
+        "send_amount": "💰 Envoyez <b>{amount} {currency}</b> à :",
+        "popular": "⭐ Devises populaires :",
+        "plan_1": "1 Mois", "plan_2": "3 Mois", "plan_3": "6 Mois", "plan_4": "1 An",
+        "bumped_note": "ℹ️ Montant ajusté pour respecter le minimum du réseau.",
+        "currency_unsupported": "⚠️ Cette devise n'est peut-être pas prise en charge. Essayez-en une autre.",
+    },
+    "de": {
+        "welcome": "👋 <b>Willkommen!</b>",
+        "locked": "🔒 Dieser Bot ist gesperrt.",
+        "buy_plan": "Bitte kaufe einen Plan zur Aktivierung.",
+        "select_feature": "Wähle eine Funktion:",
+        "already_active": "✅ Du bist bereits aktiviert.",
+        "status_active": "✅ Status: <b>Aktiv</b>",
+        "status_inactive": "❌ Status: <b>Inaktiv / Abgelaufen</b>",
+        "expiry": "Ablauf",
+        "cancelled": "❌ Abgebrochen.",
+        "deactivated": "🔒 Bot deaktiviert.",
+        "deactivated_msg": "🔒 Bot deaktiviert. Kaufe einen Plan zur Reaktivierung.",
+        "select_plan": "Wähle einen Plan:",
+        "checking": "🔎 Verfügbare Währungen werden geprüft...",
+        "no_crypto": "❌ Derzeit keine Währungen verfügbar.",
+        "generating": "⏳ Zahlungsrechnung wird erstellt...",
+        "payment_confirmed": "✅ <b>Zahlung bestätigt!</b>",
+        "activated_days": "Dein Bot wurde für <b>{days} Tage</b> aktiviert.",
+        "payment_api_error": "❌ <b>Zahlungs-API-Fehler</b>",
+        "try_again": "Bitte erneut versuchen oder Admin kontaktieren.",
+        "select_currency": "Wähle eine Zahlungswährung für <b>{plan}</b> (${price}):",
+        "choose_language": "🌐 <b>Bitte wähle deine Sprache:</b>",
+        "language_set": "✅ Sprache aktualisiert.",
+        "send_cancel": "Sende /cancel zum Abbrechen.",
+        "searching": "⏳ Suche läuft...",
+        "no_result": "❌ Kein Ergebnis oder API-Fehler.",
+        "select_option": "❓ Bitte wähle eine Option aus dem Menü.",
+        "search_currency": "🔍 Suchen",
+        "all_currencies": "📋 Alle Währungen",
+        "back": "🔙 Zurück",
+        "cancel_btn": "❌ Abbrechen",
+        "deactivate_btn": "🔒 Deaktivieren",
+        "check_status_btn": "🔄 Status prüfen",
+        "lang_btn": "🌐 Sprache",
+        "not_available": "❌ Diese Währung ist nicht verfügbar.",
+        "payment_timeout": "⏱ Zahlungs-API-Timeout. Bitte erneut versuchen.",
+        "send_currency_code": "🔍 Gib einen Währungscode oder Namen ein (z. B. BTC, ETH, USDT, Euro):",
+        "found_currencies": "{n} passende Währungen gefunden:",
+        "no_match": "❌ Keine passende Währung gefunden.",
+        "send_amount": "💰 Sende <b>{amount} {currency}</b> an:",
+        "popular": "⭐ Beliebte Währungen:",
+        "plan_1": "1 Monat", "plan_2": "3 Monate", "plan_3": "6 Monate", "plan_4": "1 Jahr",
+        "bumped_note": "ℹ️ Betrag an das Netzwerkminimum angepasst.",
+        "currency_unsupported": "⚠️ Diese Währung wird möglicherweise nicht unterstützt. Versuche eine andere.",
+    },
+    "pt": {
+        "welcome": "👋 <b>Bem-vindo!</b>",
+        "locked": "🔒 Este bot está bloqueado.",
+        "buy_plan": "Compre um plano para ativar.",
+        "select_feature": "Selecione um recurso:",
+        "already_active": "✅ Você já está ativado.",
+        "status_active": "✅ Status: <b>Ativo</b>",
+        "status_inactive": "❌ Status: <b>Inativo / Expirado</b>",
+        "expiry": "Expiração",
+        "cancelled": "❌ Cancelado.",
+        "deactivated": "🔒 Bot desativado.",
+        "deactivated_msg": "🔒 Bot desativado. Compre um plano para reativar.",
+        "select_plan": "Selecione um plano:",
+        "checking": "🔎 Verificando moedas disponíveis...",
+        "no_crypto": "❌ Nenhuma moeda disponível agora.",
+        "generating": "⏳ Gerando fatura de pagamento...",
+        "payment_confirmed": "✅ <b>Pagamento confirmado!</b>",
+        "activated_days": "Seu bot foi ativado por <b>{days} dias</b>.",
+        "payment_api_error": "❌ <b>Erro na API de pagamento</b>",
+        "try_again": "Tente novamente ou contate o administrador.",
+        "select_currency": "Escolha uma moeda de pagamento para <b>{plan}</b> (${price}):",
+        "choose_language": "🌐 <b>Escolha seu idioma:</b>",
+        "language_set": "✅ Idioma atualizado.",
+        "send_cancel": "Envie /cancel para cancelar.",
+        "searching": "⏳ Pesquisando...",
+        "no_result": "❌ Sem resultado ou erro de API.",
+        "select_option": "❓ Selecione uma opção do menu.",
+        "search_currency": "🔍 Pesquisar",
+        "all_currencies": "📋 Todas as moedas",
+        "back": "🔙 Voltar",
+        "cancel_btn": "❌ Cancelar",
+        "deactivate_btn": "🔒 Desativar",
+        "check_status_btn": "🔄 Ver status",
+        "lang_btn": "🌐 Idioma",
+        "not_available": "❌ Essa moeda não está disponível.",
+        "payment_timeout": "⏱ Tempo esgotado na API de pagamento. Tente novamente.",
+        "send_currency_code": "🔍 Digite um código ou nome de moeda (ex. BTC, ETH, USDT, Euro):",
+        "found_currencies": "{n} moedas correspondentes encontradas:",
+        "no_match": "❌ Nenhuma moeda correspondente encontrada.",
+        "send_amount": "💰 Envie <b>{amount} {currency}</b> para:",
+        "popular": "⭐ Moedas populares:",
+        "plan_1": "1 Mês", "plan_2": "3 Meses", "plan_3": "6 Meses", "plan_4": "1 Ano",
+        "bumped_note": "ℹ️ Valor ajustado para atender ao mínimo da rede.",
+        "currency_unsupported": "⚠️ Esta moeda pode não ser suportada. Tente outra.",
+    },
+    "ru": {
+        "welcome": "👋 <b>Добро пожаловать!</b>",
+        "locked": "🔒 Этот бот заблокирован.",
+        "buy_plan": "Купите план для активации.",
+        "select_feature": "Выберите функцию:",
+        "already_active": "✅ Вы уже активированы.",
+        "status_active": "✅ Статус: <b>Активен</b>",
+        "status_inactive": "❌ Статус: <b>Неактивен / Истёк</b>",
+        "expiry": "Истекает",
+        "cancelled": "❌ Отменено.",
+        "deactivated": "🔒 Бот деактивирован.",
+        "deactivated_msg": "🔒 Бот деактивирован. Купите план для повторной активации.",
+        "select_plan": "Выберите план:",
+        "checking": "🔎 Проверка доступных валют...",
+        "no_crypto": "❌ Сейчас нет доступных валют.",
+        "generating": "⏳ Создание платёжного счёта...",
+        "payment_confirmed": "✅ <b>Платёж подтверждён!</b>",
+        "activated_days": "Ваш бот активирован на <b>{days} дней</b>.",
+        "payment_api_error": "❌ <b>Ошибка платёжного API</b>",
+        "try_again": "Попробуйте снова или свяжитесь с админом.",
+        "select_currency": "Выберите валюту оплаты для <b>{plan}</b> (${price}):",
+        "choose_language": "🌐 <b>Выберите язык:</b>",
+        "language_set": "✅ Язык обновлён.",
+        "send_cancel": "Отправьте /cancel для отмены.",
+        "searching": "⏳ Поиск...",
+        "no_result": "❌ Нет результата или ошибка API.",
+        "select_option": "❓ Выберите пункт меню.",
+        "search_currency": "🔍 Поиск",
+        "all_currencies": "📋 Все валюты",
+        "back": "🔙 Назад",
+        "cancel_btn": "❌ Отмена",
+        "deactivate_btn": "🔒 Деактивировать",
+        "check_status_btn": "🔄 Проверить статус",
+        "lang_btn": "🌐 Язык",
+        "not_available": "❌ Эта валюта недоступна.",
+        "payment_timeout": "⏱ Тайм-аут платёжного API. Попробуйте снова.",
+        "send_currency_code": "🔍 Введите код или название валюты (напр. BTC, ETH, USDT, Euro):",
+        "found_currencies": "Найдено {n} подходящих валют:",
+        "no_match": "❌ Подходящая валюта не найдена.",
+        "send_amount": "💰 Отправьте <b>{amount} {currency}</b> на:",
+        "popular": "⭐ Популярные валюты:",
+        "plan_1": "1 месяц", "plan_2": "3 месяца", "plan_3": "6 месяцев", "plan_4": "1 год",
+        "bumped_note": "ℹ️ Сумма скорректирована под минимум сети.",
+        "currency_unsupported": "⚠️ Эта валюта может не поддерживаться. Попробуйте другую.",
+    },
+    "zh": {
+        "welcome": "👋 <b>欢迎！</b>",
+        "locked": "🔒 此机器人已锁定。",
+        "buy_plan": "请购买套餐以激活。",
+        "select_feature": "请选择功能：",
+        "already_active": "✅ 您已激活。",
+        "status_active": "✅ 状态：<b>已激活</b>",
+        "status_inactive": "❌ 状态：<b>未激活 / 已过期</b>",
+        "expiry": "到期时间",
+        "cancelled": "❌ 已取消。",
+        "deactivated": "🔒 机器人已停用。",
+        "deactivated_msg": "🔒 机器人已停用。请购买套餐重新激活。",
+        "select_plan": "请选择套餐：",
+        "checking": "🔎 正在检查可用货币...",
+        "no_crypto": "❌ 当前没有可用货币。",
+        "generating": "⏳ 正在生成支付账单...",
+        "payment_confirmed": "✅ <b>支付已确认！</b>",
+        "activated_days": "您的机器人已激活 <b>{days} 天</b>。",
+        "payment_api_error": "❌ <b>支付 API 错误</b>",
+        "try_again": "请重试或联系管理员。",
+        "select_currency": "为 <b>{plan}</b> (${price}) 选择支付货币：",
+        "choose_language": "🌐 <b>请选择您的语言：</b>",
+        "language_set": "✅ 语言已更新。",
+        "send_cancel": "发送 /cancel 取消。",
+        "searching": "⏳ 搜索中...",
+        "no_result": "❌ 无结果或 API 错误。",
+        "select_option": "❓ 请从菜单中选择一个选项。",
+        "search_currency": "🔍 搜索",
+        "all_currencies": "📋 所有货币",
+        "back": "🔙 返回",
+        "cancel_btn": "❌ 取消",
+        "deactivate_btn": "🔒 停用",
+        "check_status_btn": "🔄 检查状态",
+        "lang_btn": "🌐 语言",
+        "not_available": "❌ 该货币不可用。",
+        "payment_timeout": "⏱ 支付 API 超时。请重试。",
+        "send_currency_code": "🔍 输入货币代码或名称（如 BTC、ETH、USDT、Euro）：",
+        "found_currencies": "找到 {n} 个匹配的货币：",
+        "no_match": "❌ 未找到匹配的货币。",
+        "send_amount": "💰 发送 <b>{amount} {currency}</b> 至：",
+        "popular": "⭐ 热门货币：",
+        "plan_1": "1 个月", "plan_2": "3 个月", "plan_3": "6 个月", "plan_4": "1 年",
+        "bumped_note": "ℹ️ 金额已调整以满足网络最低要求。",
+        "currency_unsupported": "⚠️ 该货币可能不支持支付，请尝试其他货币。",
+    },
+    "id": {
+        "welcome": "👋 <b>Selamat datang!</b>",
+        "locked": "🔒 Bot ini terkunci.",
+        "buy_plan": "Silakan beli paket untuk mengaktifkan.",
+        "select_feature": "Pilih fitur:",
+        "already_active": "✅ Anda sudah aktif.",
+        "status_active": "✅ Status: <b>Aktif</b>",
+        "status_inactive": "❌ Status: <b>Tidak aktif / Kedaluwarsa</b>",
+        "expiry": "Kedaluwarsa",
+        "cancelled": "❌ Dibatalkan.",
+        "deactivated": "🔒 Bot dinonaktifkan.",
+        "deactivated_msg": "🔒 Bot dinonaktifkan. Beli paket untuk mengaktifkan kembali.",
+        "select_plan": "Pilih paket:",
+        "checking": "🔎 Memeriksa mata uang yang tersedia...",
+        "no_crypto": "❌ Tidak ada mata uang yang tersedia saat ini.",
+        "generating": "⏳ Membuat invoice pembayaran...",
+        "payment_confirmed": "✅ <b>Pembayaran dikonfirmasi!</b>",
+        "activated_days": "Bot Anda telah diaktifkan selama <b>{days} hari</b>.",
+        "payment_api_error": "❌ <b>Kesalahan API pembayaran</b>",
+        "try_again": "Coba lagi atau hubungi admin.",
+        "select_currency": "Pilih mata uang pembayaran untuk <b>{plan}</b> (${price}):",
+        "choose_language": "🌐 <b>Silakan pilih bahasa Anda:</b>",
+        "language_set": "✅ Bahasa diperbarui.",
+        "send_cancel": "Kirim /cancel untuk membatalkan.",
+        "searching": "⏳ Mencari...",
+        "no_result": "❌ Tidak ada hasil atau kesalahan API.",
+        "select_option": "❓ Silakan pilih opsi dari menu.",
+        "search_currency": "🔍 Cari",
+        "all_currencies": "📋 Semua Mata Uang",
+        "back": "🔙 Kembali",
+        "cancel_btn": "❌ Batal",
+        "deactivate_btn": "🔒 Nonaktifkan",
+        "check_status_btn": "🔄 Cek Status",
+        "lang_btn": "🌐 Bahasa",
+        "not_available": "❌ Mata uang itu tidak tersedia.",
+        "payment_timeout": "⏱ API pembayaran habis waktu. Coba lagi.",
+        "send_currency_code": "🔍 Ketik kode atau nama mata uang (mis. BTC, ETH, USDT, Euro):",
+        "found_currencies": "Ditemukan {n} mata uang yang cocok:",
+        "no_match": "❌ Tidak ada mata uang yang cocok.",
+        "send_amount": "💰 Kirim <b>{amount} {currency}</b> ke:",
+        "popular": "⭐ Mata uang populer:",
+        "plan_1": "1 Bulan", "plan_2": "3 Bulan", "plan_3": "6 Bulan", "plan_4": "1 Tahun",
+        "bumped_note": "ℹ️ Jumlah disesuaikan dengan minimum jaringan.",
+        "currency_unsupported": "⚠️ Mata uang ini mungkin tidak didukung. Coba yang lain.",
+    },
+    "tr": {
+        "welcome": "👋 <b>Hoş geldiniz!</b>",
+        "locked": "🔒 Bu bot kilitli.",
+        "buy_plan": "Etkinleştirmek için lütfen bir plan satın alın.",
+        "select_feature": "Bir özellik seçin:",
+        "already_active": "✅ Zaten etkinsiniz.",
+        "status_active": "✅ Durum: <b>Etkin</b>",
+        "status_inactive": "❌ Durum: <b>Etkin değil / Süresi doldu</b>",
+        "expiry": "Bitiş",
+        "cancelled": "❌ İptal edildi.",
+        "deactivated": "🔒 Bot devre dışı bırakıldı.",
+        "deactivated_msg": "🔒 Bot devre dışı. Yeniden etkinleştirmek için plan satın alın.",
+        "select_plan": "Bir plan seçin:",
+        "checking": "🔎 Kullanılabilir para birimleri kontrol ediliyor...",
+        "no_crypto": "❌ Şu anda kullanılabilir para birimi yok.",
+        "generating": "⏳ Ödeme faturası oluşturuluyor...",
+        "payment_confirmed": "✅ <b>Ödeme onaylandı!</b>",
+        "activated_days": "Botunuz <b>{days} gün</b> için etkinleştirildi.",
+        "payment_api_error": "❌ <b>Ödeme API hatası</b>",
+        "try_again": "Tekrar deneyin veya yöneticiye başvurun.",
+        "select_currency": "<b>{plan}</b> (${price}) için ödeme para birimi seçin:",
+        "choose_language": "🌐 <b>Lütfen dilinizi seçin:</b>",
+        "language_set": "✅ Dil güncellendi.",
+        "send_cancel": "İptal için /cancel gönderin.",
+        "searching": "⏳ Aranıyor...",
+        "no_result": "❌ Sonuç yok veya API hatası.",
+        "select_option": "❓ Lütfen menüden bir seçenek seçin.",
+        "search_currency": "🔍 Ara",
+        "all_currencies": "📋 Tüm Para Birimleri",
+        "back": "🔙 Geri",
+        "cancel_btn": "❌ İptal",
+        "deactivate_btn": "🔒 Devre dışı bırak",
+        "check_status_btn": "🔄 Durumu Kontrol Et",
+        "lang_btn": "🌐 Dil",
+        "not_available": "❌ Bu para birimi kullanılamıyor.",
+        "payment_timeout": "⏱ Ödeme API zaman aşımı. Tekrar deneyin.",
+        "send_currency_code": "🔍 Bir para birimi kodu veya adı yazın (örn. BTC, ETH, USDT, Euro):",
+        "found_currencies": "{n} eşleşen para birimi bulundu:",
+        "no_match": "❌ Eşleşen para birimi bulunamadı.",
+        "send_amount": "💰 <b>{amount} {currency}</b> gönderin:",
+        "popular": "⭐ Popüler para birimleri:",
+        "plan_1": "1 Ay", "plan_2": "3 Ay", "plan_3": "6 Ay", "plan_4": "1 Yıl",
+        "bumped_note": "ℹ️ Tutar ağ minimumuna göre ayarlandı.",
+        "currency_unsupported": "⚠️ Bu para birimi desteklenmiyor olabilir. Başka bir tane deneyin.",
+    },
+    "fa": {
+        "welcome": "👋 <b>خوش آمدید!</b>",
+        "locked": "🔒 این ربات قفل است.",
+        "buy_plan": "لطفاً برای فعال‌سازی یک طرح بخرید.",
+        "select_feature": "یک ویژگی انتخاب کنید:",
+        "already_active": "✅ شما قبلاً فعال هستید.",
+        "status_active": "✅ وضعیت: <b>فعال</b>",
+        "status_inactive": "❌ وضعیت: <b>غیرفعال / منقضی</b>",
+        "expiry": "انقضا",
+        "cancelled": "❌ لغو شد.",
+        "deactivated": "🔒 ربات غیرفعال شد.",
+        "deactivated_msg": "🔒 ربات غیرفعال شد. برای فعال‌سازی مجدد طرح بخرید.",
+        "select_plan": "یک طرح انتخاب کنید:",
+        "checking": "🔎 بررسی ارزهای موجود...",
+        "no_crypto": "❌ در حال حاضر ارزی موجود نیست.",
+        "generating": "⏳ در حال ایجاد فاکتور پرداخت...",
+        "payment_confirmed": "✅ <b>پرداخت تأیید شد!</b>",
+        "activated_days": "ربات شما برای <b>{days} روز</b> فعال شد.",
+        "payment_api_error": "❌ <b>خطای API پرداخت</b>",
+        "try_again": "دوباره تلاش کنید یا با مدیر تماس بگیرید.",
+        "select_currency": "ارز پرداخت را برای <b>{plan}</b> (${price}) انتخاب کنید:",
+        "choose_language": "🌐 <b>لطفاً زبان خود را انتخاب کنید:</b>",
+        "language_set": "✅ زبان به‌روزرسانی شد.",
+        "send_cancel": "برای لغو /cancel را بفرستید.",
+        "searching": "⏳ در حال جستجو...",
+        "no_result": "❌ نتیجه‌ای نیست یا خطای API.",
+        "select_option": "❓ لطفاً یک گزینه از منو انتخاب کنید.",
+        "search_currency": "🔍 جستجو",
+        "all_currencies": "📋 همه ارزها",
+        "back": "🔙 بازگشت",
+        "cancel_btn": "❌ لغو",
+        "deactivate_btn": "🔒 غیرفعال کردن",
+        "check_status_btn": "🔄 بررسی وضعیت",
+        "lang_btn": "🌐 زبان",
+        "not_available": "❌ آن ارز موجود نیست.",
+        "payment_timeout": "⏱ زمان API پرداخت تمام شد. دوباره تلاش کنید.",
+        "send_currency_code": "🔍 کد یا نام ارز را وارد کنید (مثلاً BTC, ETH, USDT, Euro):",
+        "found_currencies": "{n} ارز مطابق پیدا شد:",
+        "no_match": "❌ ارز مطابقی پیدا نشد.",
+        "send_amount": "💰 <b>{amount} {currency}</b> را بفرستید به:",
+        "popular": "⭐ ارزهای محبوب:",
+        "plan_1": "1 ماه", "plan_2": "3 ماه", "plan_3": "6 ماه", "plan_4": "1 سال",
+        "bumped_note": "ℹ️ مبلغ برای رسیدن به حداقل شبکه تنظیم شد.",
+        "currency_unsupported": "⚠️ این ارز ممکن است پشتیبانی نشود. ارز دیگری امتحان کنید.",
+    },
+    "it": {
+        "welcome": "👋 <b>Benvenuto!</b>",
+        "locked": "🔒 Questo bot è bloccato.",
+        "buy_plan": "Acquista un piano per attivarlo.",
+        "select_feature": "Seleziona una funzione:",
+        "already_active": "✅ Sei già attivato.",
+        "status_active": "✅ Stato: <b>Attivo</b>",
+        "status_inactive": "❌ Stato: <b>Inattivo / Scaduto</b>",
+        "expiry": "Scadenza",
+        "cancelled": "❌ Annullato.",
+        "deactivated": "🔒 Bot disattivato.",
+        "deactivated_msg": "🔒 Bot disattivato. Acquista un piano per riattivare.",
+        "select_plan": "Seleziona un piano:",
+        "checking": "🔎 Controllo delle valute disponibili...",
+        "no_crypto": "❌ Nessuna valuta disponibile al momento.",
+        "generating": "⏳ Generazione della fattura...",
+        "payment_confirmed": "✅ <b>Pagamento confermato!</b>",
+        "activated_days": "Il tuo bot è stato attivato per <b>{days} giorni</b>.",
+        "payment_api_error": "❌ <b>Errore API di pagamento</b>",
+        "try_again": "Riprova o contatta l'amministratore.",
+        "select_currency": "Scegli una valuta di pagamento per <b>{plan}</b> (${price}):",
+        "choose_language": "🌐 <b>Scegli la tua lingua:</b>",
+        "language_set": "✅ Lingua aggiornata.",
+        "send_cancel": "Invia /cancel per annullare.",
+        "searching": "⏳ Ricerca...",
+        "no_result": "❌ Nessun risultato o errore API.",
+        "select_option": "❓ Seleziona un'opzione dal menu.",
+        "search_currency": "🔍 Cerca",
+        "all_currencies": "📋 Tutte le valute",
+        "back": "🔙 Indietro",
+        "cancel_btn": "❌ Annulla",
+        "deactivate_btn": "🔒 Disattiva",
+        "check_status_btn": "🔄 Controlla stato",
+        "lang_btn": "🌐 Lingua",
+        "not_available": "❌ Questa valuta non è disponibile.",
+        "payment_timeout": "⏱ Timeout API di pagamento. Riprova.",
+        "send_currency_code": "🔍 Digita un codice o nome di valuta (es. BTC, ETH, USDT, Euro):",
+        "found_currencies": "Trovate {n} valute corrispondenti:",
+        "no_match": "❌ Nessuna valuta corrispondente trovata.",
+        "send_amount": "💰 Invia <b>{amount} {currency}</b> a:",
+        "popular": "⭐ Valute popolari:",
+        "plan_1": "1 Mese", "plan_2": "3 Mesi", "plan_3": "6 Mesi", "plan_4": "1 Anno",
+        "bumped_note": "ℹ️ Importo adeguato al minimo della rete.",
+        "currency_unsupported": "⚠️ Questa valuta potrebbe non essere supportata. Provane un'altra.",
+    },
+    "ta": {
+        "welcome": "👋 <b>வரவேற்கிறோம்!</b>",
+        "locked": "🔒 இந்த பாட் பூட்டப்பட்டுள்ளது.",
+        "buy_plan": "செயல்படுத்த ஒரு திட்டத்தை வாங்கவும்.",
+        "select_feature": "ஒரு அம்சத்தைத் தேர்ந்தெடுக்கவும்:",
+        "already_active": "✅ நீங்கள் ஏற்கனவே செயலில் உள்ளீர்கள்.",
+        "status_active": "✅ நிலை: <b>செயலில்</b>",
+        "status_inactive": "❌ நிலை: <b>செயலில் இல்லை / காலாவதி</b>",
+        "expiry": "காலாவதி",
+        "cancelled": "❌ ரத்து செய்யப்பட்டது.",
+        "deactivated": "🔒 பாட் செயலிழக்கப்பட்டது.",
+        "deactivated_msg": "🔒 பாட் செயலிழக்கப்பட்டது. மீண்டும் செயல்படுத்த ஒரு திட்டத்தை வாங்கவும்.",
+        "select_plan": "ஒரு திட்டத்தைத் தேர்ந்தெடுக்கவும்:",
+        "checking": "🔎 கிடைக்கும் நாணயங்களை சரிபார்க்கிறது...",
+        "no_crypto": "❌ இப்போது நாணயங்கள் எதுவும் கிடைக்கவில்லை.",
+        "generating": "⏳ கட்டண விலைப்பட்டியல் உருவாக்கப்படுகிறது...",
+        "payment_confirmed": "✅ <b>கட்டணம் உறுதிப்படுத்தப்பட்டது!</b>",
+        "activated_days": "உங்கள் பாட் <b>{days} நாட்களுக்கு</b> செயல்படுத்தப்பட்டது.",
+        "payment_api_error": "❌ <b>கட்டண API பிழை</b>",
+        "try_again": "மீண்டும் முயற்சிக்கவும் அல்லது நிர்வாகியைத் தொடர்பு கொள்ளவும்.",
+        "select_currency": "<b>{plan}</b> (${price}) க்கான கட்டண நாணயத்தைத் தேர்ந்தெடுக்கவும்:",
+        "choose_language": "🌐 <b>உங்கள் மொழியைத் தேர்ந்தெடுக்கவும்:</b>",
+        "language_set": "✅ மொழி புதுப்பிக்கப்பட்டது.",
+        "send_cancel": "ரத்து செய்ய /cancel அனுப்பவும்.",
+        "searching": "⏳ தேடுகிறது...",
+        "no_result": "❌ முடிவு இல்லை அல்லது API பிழை.",
+        "select_option": "❓ மெனுவிலிருந்து ஒரு விருப்பத்தைத் தேர்ந்தெடுக்கவும்.",
+        "search_currency": "🔍 தேடு",
+        "all_currencies": "📋 அனைத்து நாணயங்கள்",
+        "back": "🔙 பின்செல்",
+        "cancel_btn": "❌ ரத்து",
+        "deactivate_btn": "🔒 செயலிழக்க",
+        "check_status_btn": "🔄 நிலையைப் பார்",
+        "lang_btn": "🌐 மொழி",
+        "not_available": "❌ அந்த நாணயம் கிடைக்கவில்லை.",
+        "payment_timeout": "⏱ கட்டண API நேரம் முடிந்தது. மீண்டும் முயற்சிக்கவும்.",
+        "send_currency_code": "🔍 நாணய குறியீடு அல்லது பெயரை உள்ளிடவும் (எ.கா. BTC, ETH, USDT, Euro):",
+        "found_currencies": "{n} பொருந்தும் நாணயங்கள் கிடைத்தன:",
+        "no_match": "❌ பொருந்தும் நாணயம் இல்லை.",
+        "send_amount": "💰 <b>{amount} {currency}</b> அனுப்பவும்:",
+        "popular": "⭐ பிரபல நாணயங்கள்:",
+        "plan_1": "1 மாதம்", "plan_2": "3 மாதங்கள்", "plan_3": "6 மாதங்கள்", "plan_4": "1 வருடம்",
+        "bumped_note": "ℹ️ நெட்வொர்க் குறைந்தபட்சத்திற்கு ஏற்ப தொகை சரிசெய்யப்பட்டது.",
+        "currency_unsupported": "⚠️ இந்த நாணயம் ஆதரிக்கப்படாமல் இருக்கலாம். வேறொன்றை முயற்சிக்கவும்.",
+    },
+}
+
+def t(lang, key, **kwargs):
+    lang = lang if lang in TEXTS else "en"
+    template = TEXTS[lang].get(key) or TEXTS["en"].get(key) or key
+    try:
+        return template.format(**kwargs)
+    except Exception:
+        return template
+
+def normalize_text(s):
+    if not isinstance(s, str):
+        return ""
+    for ch in ("\ufe0f", "\u200b", "\u200c", "\u200d", "\u00a0", "\u2060"):
+        s = s.replace(ch, "")
+    return s.strip().lower()
+
+def is_button(text, key, lang):
+    candidates = {
+        normalize_text(t(lang, key)),
+        normalize_text(TEXTS["en"].get(key, "")),
+    }
+    return normalize_text(text) in candidates
+
+# ============================================================
+# API CONFIGURATION
+# ============================================================
+API_CONFIG = {
+    "🪪 Aadhaar Info ": {
+        "url": "https://travelers-creature-sarah-rogers.trycloudflare.com/search?q=",
+        "prompt": "🪪 Send a 12 Digit Aadhaar Number to Get🪪 information 💀"
+    },
+    "📞 Number Info ": {
+        "url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=",
+        "prompt": "📞Send a 10 Digit Indian Number (Without +91) to Get🪪 information 💀     Example (9712073901)"
+    },
+    "📍PIN Code Lookup": {
+        "url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=",
+        "prompt": "📍 Send PIN code to get information 💀 (number)"
+    },
+    "🚘 Vehicle Info": {
+        "url": "https://parivahan-x.paskhinpf9.workers.dev/?vehicle=",
+        "prompt": "🚘 Send Vehicle Number 2.0 to get information💀(write in small letters)"
+    },
+    "🤖 Telegram ID / Username ": {
+        "url": "https://anon-tg-info.vercel.app/telegram?key=temp1750&username=",
+        "prompt": "🤖 Send the authorized Telegram username:"
+    },
+    "🆔 PAN Info ": {
+        "url": "https://paninfo.noob73613.workers.dev/pan?pan=",
+        "prompt": "🆔 Send the authorized PAN reference:"
+    },
+    "📱 Telegram Chat ID ": {
+        "url": "https://anon-tg-info.vercel.app/tgReg_beta?userid=",
+        "prompt": "📱 Send the authorized Chat ID:"
+    },
+    "💳 IFSC Info ": {
+        "url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=",
+        "prompt": "💳 Send the IFSC code number:-"
+    },
+    "🏦 UPI INFO ": {
+        "url": "https://upi-id-to-info-by-abhigyan.onrender.com/upi/",
+        "prompt": "🏦 Send the authorized UPI ID:"
+    },
+    "📧 Advanced Email Info ": {
+        "url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=",
+        "prompt": "📧 Send the authorized email:"
+    },
+    "🌐 IP Address Info": {
+        "url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=",
+        "prompt": "🌐 Send the IP address:"
+    }
+}
+
+# ============================================================
+# HTTP SESSION
+# ============================================================
 HTTP = requests.Session()
 HTTP.headers.update({"Connection": "keep-alive"})
-
-# requests' adapter uses a connection pool for concurrent Telegram/API calls.
-from requests.adapters import HTTPAdapter
-HTTP.mount(
-    "https://",
-    HTTPAdapter(pool_connections=20, pool_maxsize=50, max_retries=0)
-)
-HTTP.mount(
-    "http://",
-    HTTPAdapter(pool_connections=20, pool_maxsize=50, max_retries=0)
-)
+HTTP.mount("https://", HTTPAdapter(pool_connections=20, pool_maxsize=50, max_retries=0))
+HTTP.mount("http://", HTTPAdapter(pool_connections=20, pool_maxsize=50, max_retries=0))
 
 TELEGRAM_CONNECT_TIMEOUT = 5
 TELEGRAM_READ_TIMEOUT = 35
 API_CONNECT_TIMEOUT = 3
-API_READ_TIMEOUT = 12
+API_READ_TIMEOUT = 15
 
+USER_TELEGRAM_API = "https://api.telegram.org/bot" + USER_BOT_TOKEN
+ADMIN_TELEGRAM_APIS = {
+    1: "https://api.telegram.org/bot" + ADMIN_BOT_TOKEN_1,
+}
+
+# ============================================================
+# STATE
+# ============================================================
+USER_STATE = {}
+ACTIVATED_USERS = {}
+USER_LANGS = {}
+
+# ============================================================
+# DATABASE
+# ============================================================
+def load_activation_data():
+    global ACTIVATED_USERS, USER_LANGS
+    try:
+        with open(DB_FILE, "r", encoding="utf-8") as file:
+            data = json.load(file)
+        raw_users = data.get("activated_users", {})
+        ACTIVATED_USERS = {int(k): float(v) for k, v in raw_users.items()}
+        raw_langs = data.get("user_langs", {})
+        USER_LANGS = {int(k): str(v) for k, v in raw_langs.items()}
+    except FileNotFoundError:
+        ACTIVATED_USERS = {}
+        USER_LANGS = {}
+    except Exception as error:
+        print("Could not load activation database:", error)
+
+def save_activation_data():
+    with db_lock:
+        data = {
+            "activated_users": ACTIVATED_USERS,
+            "user_langs": USER_LANGS,
+        }
+        temp_file = DB_FILE + ".tmp"
+        try:
+            with open(temp_file, "w", encoding="utf-8") as file:
+                json.dump(data, file, indent=2, ensure_ascii=False)
+            os.replace(temp_file, DB_FILE)
+        except Exception as error:
+            print("Could not save activation database:", error)
+
+def get_lang(chat_id):
+    return USER_LANGS.get(chat_id, "en")
+
+def set_lang(chat_id, lang):
+    USER_LANGS[chat_id] = lang
+    save_activation_data()
 
 # ============================================================
 # TELEGRAM API
 # ============================================================
-
-USER_TELEGRAM_API = (
-    "https://api.telegram.org/bot"
-    + USER_BOT_TOKEN
-)
-
-ADMIN_TELEGRAM_APIS = {
-    1: "https://api.telegram.org/bot" + ADMIN_BOT_TOKEN_1,
-    2: "https://api.telegram.org/bot" + ADMIN_BOT_TOKEN_2,
-}
-
-
-# ============================================================
-# USER STATE
-# ============================================================
-
-# Example:
-#
-# USER_STATE[12345] = {
-#     "activation": True
-# }
-#
-# or:
-#
-# USER_STATE[12345] = {
-#     "api_name": "Example API"
-# }
-
-USER_STATE = {}
-
-
-# ============================================================
-# ACTIVATION / PASSWORD STATE
-# ============================================================
-
-# Example password record:
-# {
-#   "123456789": {
-#       "password": "Ab7Kp9Qx2Lm4Rt8Z",
-#       "used": false,
-#       "created_at": 1780000000
-#   }
-# }
-#
-# Passwords are assigned to ONE Telegram user ID.
-# The password is never sent back by the USER bot.
-#
-# This file makes passwords survive a program restart.
-ACTIVATION_PASSWORDS = {}
-ACTIVATED_USERS = set()
-
-# chat_id -> expiry timestamp
-PASSWORD_COOLDOWNS = {}
-
-
-def load_activation_data():
-    """Load activation passwords and activated users from disk."""
-    global ACTIVATION_PASSWORDS, ACTIVATED_USERS
-
-    try:
-        with open(PASSWORD_DB_FILE, "r", encoding="utf-8") as file:
-            data = json.load(file)
-
-        ACTIVATION_PASSWORDS = data.get("passwords", {})
-        activated = data.get("activated_users", [])
-
-        ACTIVATED_USERS = set(int(user_id) for user_id in activated)
-
-    except FileNotFoundError:
-        ACTIVATION_PASSWORDS = {}
-        ACTIVATED_USERS = set()
-
-    except Exception as error:
-        print("Could not load activation database:", error)
-        ACTIVATION_PASSWORDS = {}
-        ACTIVATED_USERS = set()
-
-
-def save_activation_data():
-    """Save activation data atomically."""
-    data = {
-        "passwords": ACTIVATION_PASSWORDS,
-        "activated_users": sorted(ACTIVATED_USERS)
-    }
-
-    temp_file = PASSWORD_DB_FILE + ".tmp"
-
-    try:
-        with open(temp_file, "w", encoding="utf-8") as file:
-            json.dump(data, file, indent=2, ensure_ascii=False)
-
-        # Replace old file after successful write.
-        import os
-        os.replace(temp_file, PASSWORD_DB_FILE)
-
-    except Exception as error:
-        print("Could not save activation database:", error)
-
-
-def generate_activation_password(length=16):
-    """Generate a cryptographically strong password."""
-    import secrets
-    import string
-
-    alphabet = string.ascii_letters + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(length))
-
-
-def normalize_user_id(value):
-    """Validate a Telegram numeric user ID."""
-    value = str(value).strip()
-
-    if not value.isdigit():
-        return None
-
-    try:
-        user_id = int(value)
-    except ValueError:
-        return None
-
-    if user_id <= 0:
-        return None
-
-    return user_id
-
-
-def admin_generate_password(target_user_id):
-    """
-    Generate exactly one new password for a target Telegram user.
-
-    If that user already has an unused password, it is replaced so each
-    user has only one currently valid password.
-    """
-    target_user_id = normalize_user_id(target_user_id)
-
-    if target_user_id is None:
-        return None, "Invalid Telegram user ID."
-
-    if target_user_id in ACTIVATED_USERS:
-        return None, "That user is already activated. Deactivate them first."
-
-    password = generate_activation_password()
-
-    ACTIVATION_PASSWORDS[str(target_user_id)] = {
-        "password": password,
-        "used": False,
-        "created_at": int(time.time())
-    }
-
-    save_activation_data()
-
-    return password, None
-
-
-def admin_revoke_password(target_user_id):
-    """Remove the currently assigned password for a user."""
-    target_user_id = normalize_user_id(target_user_id)
-
-    if target_user_id is None:
-        return False, "Invalid Telegram user ID."
-
-    record = ACTIVATION_PASSWORDS.pop(str(target_user_id), None)
-
-    if record is None:
-        return False, "No password record exists for that user."
-
-    save_activation_data()
-    return True, "Password revoked."
-
-
-def password_matches_user(chat_id, entered_password):
-    """
-    Return True only when:
-      1. the password belongs to this exact Telegram user ID;
-      2. the password has not already been used;
-      3. the password matches exactly.
-
-    This prevents one user's password from activating another user.
-    """
-    record = ACTIVATION_PASSWORDS.get(str(chat_id))
-
-    if not record:
-        return False
-
-    if record.get("used") is True:
-        return False
-
-    return entered_password == record.get("password")
-
-
-# ============================================================
-# SEND MESSAGE
-# ============================================================
-
-
-# ============================================================
-
-def send_message(chat_id, text, keyboard=None):
-
+def send_message(chat_id, text, keyboard=None, parse_mode="HTML"):
     url = USER_TELEGRAM_API + "/sendMessage"
-
-    data = {
-        "chat_id": chat_id,
-        "text": text
-    }
-
+    data = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        data["parse_mode"] = parse_mode
     if keyboard is not None:
-
-        data["reply_markup"] = json.dumps(
-            keyboard,
-            ensure_ascii=False
-        )
+        data["reply_markup"] = json.dumps(keyboard, ensure_ascii=False)
 
     try:
+        response = HTTP.post(url, data=data, timeout=(TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT))
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code == 400 and "parse" in e.response.text.lower():
+            print("HTML parse failed, retrying as plain text...")
+            data.pop("parse_mode", None)
+            try:
+                response = HTTP.post(url, data=data, timeout=(TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT))
+                response.raise_for_status()
+                return response.json()
+            except Exception as inner:
+                print("Plain text retry failed:", inner)
+                return None
+        print("Telegram error:", e)
+        return None
+    except Exception as error:
+        print("Telegram error:", error)
+        return None
 
+def send_photo(chat_id, photo_bytes, caption=None, keyboard=None, parse_mode="HTML"):
+    url = USER_TELEGRAM_API + "/sendPhoto"
+    files = {"photo": ("qr.png", photo_bytes, "image/png")}
+    data = {"chat_id": chat_id}
+    if caption:
+        data["caption"] = caption
+        if parse_mode:
+            data["parse_mode"] = parse_mode
+    if keyboard is not None:
+        data["reply_markup"] = json.dumps(keyboard, ensure_ascii=False)
+    try:
         response = HTTP.post(
-            url,
-            data=data,
+            url, data=data, files=files,
             timeout=(TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT)
         )
-
         response.raise_for_status()
-
         return response.json()
-
-    except requests.exceptions.RequestException as error:
-
-        # Error appears only in terminal.
-        print("Telegram error:", error)
-
-        return None
-
     except Exception as error:
-
-        print(
-            "Telegram unexpected error:",
-            error
-        )
-
+        print("Telegram sendPhoto error:", error)
         return None
-
-
-# ============================================================
-# GET TELEGRAM UPDATES
-# ============================================================
 
 def get_updates(offset=None):
-
     url = USER_TELEGRAM_API + "/getUpdates"
-
-    params = {
-        "timeout": 30
-    }
-
+    params = {"timeout": 30}
     if offset is not None:
         params["offset"] = offset
-
     try:
-
-        response = HTTP.get(
-            url,
-            params=params,
-            timeout=(TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT)
-        )
-
+        response = HTTP.get(url, params=params, timeout=(TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT))
         response.raise_for_status()
-
         return response.json()
-
-    except requests.exceptions.RequestException as error:
-
-        print(
-            "getUpdates error:",
-            error
-        )
-
-        return None
-
     except Exception as error:
-
-        print(
-            "Unexpected getUpdates error:",
-            error
-        )
-
+        print("getUpdates error:", error)
         return None
 
+def answer_callback(callback_id, text=None):
+    url = USER_TELEGRAM_API + "/answerCallbackQuery"
+    data = {"callback_query_id": callback_id}
+    if text:
+        data["text"] = text[:200]
+    try:
+        HTTP.post(url, data=data, timeout=(5, 10))
+    except Exception as e:
+        print("answerCallbackQuery error:", e)
+
+def edit_inline_keyboard(chat_id, message_id, keyboard):
+    url = USER_TELEGRAM_API + "/editMessageReplyMarkup"
+    data = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "reply_markup": json.dumps(keyboard, ensure_ascii=False),
+    }
+    try:
+        HTTP.post(url, data=data, timeout=(5, 15))
+    except Exception as e:
+        print("editMessageReplyMarkup error:", e)
+
+def delete_message(chat_id, message_id):
+    url = USER_TELEGRAM_API + "/deleteMessage"
+    try:
+        HTTP.post(url, data={"chat_id": chat_id, "message_id": message_id}, timeout=(5, 10))
+    except Exception as e:
+        print("deleteMessage error:", e)
 
 # ============================================================
-# ACTIVATION KEYBOARD
+# QR + HELPERS
 # ============================================================
+def generate_qr_bytes(data):
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_H,
+        box_size=10,
+        border=3,
+    )
+    qr.add_data(data)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf.getvalue()
 
-def activation_keyboard():
-
+def copy_address_keyboard(address):
     return {
-
-        "keyboard": [
-            [
-                "🔐 Activate Bot"
-            ]
-        ],
-
-        "resize_keyboard": True,
-
-        "one_time_keyboard": False
+        "inline_keyboard": [
+            [{"text": "📋 Copy Address", "copy_text": {"text": address}}]
+        ]
     }
 
+def build_payment_uri(currency, address, amount=None):
+    currency = (currency or "").lower()
+    if currency == "btc":
+        uri = f"bitcoin:{address}"
+        if amount:
+            uri += f"?amount={amount}"
+        return uri
+    if currency == "eth":
+        return f"ethereum:{address}"
+    if currency == "ltc":
+        uri = f"litecoin:{address}"
+        if amount:
+            uri += f"?amount={amount}"
+        return uri
+    if currency == "trx":
+        return f"tron:{address}"
+    return address
+
+def prettify_currency(raw):
+    raw = (raw or "").upper()
+    if raw == "USDTTRC20":
+        return "USDT (TRC20)"
+    if raw == "USDTERC20":
+        return "USDT (ERC20)"
+    return raw
 
 # ============================================================
-# MAIN KEYBOARD
+# CURRENCY LIST (dynamic — all NOWPayments currencies)
 # ============================================================
-
-def main_keyboard():
-
-    buttons = list(
-        API_CONFIG.keys()
-    )
-
-    keyboard = []
-
-    # Two buttons per row
-    for i in range(
-        0,
-        len(buttons),
-        2
-    ):
-
-        keyboard.append(
-            buttons[i:i + 2]
-        )
-
-    keyboard.append([
-        "🔒 Deactivate"
-    ])
-
-    keyboard.append([
-        "❌ Cancel"
-    ])
-
-    return {
-
-        "keyboard": keyboard,
-
-        "resize_keyboard": True,
-
-        "one_time_keyboard": False
-    }
-
-
-# ============================================================
-# FORMAT TIME
-# ============================================================
-
-def format_remaining_time(seconds):
-
-    seconds = max(
-        0,
-        int(seconds)
-    )
-
-    hours = seconds // 3600
-
-    minutes = (
-        seconds % 3600
-    ) // 60
-
-    secs = seconds % 60
-
-    if hours > 0:
-
-        return (
-            f"{hours}h "
-            f"{minutes}m "
-            f"{secs}s"
-        )
-
-    if minutes > 0:
-
-        return (
-            f"{minutes}m "
-            f"{secs}s"
-        )
-
-    return f"{secs}s"
-
-
-# ============================================================
-# CHECK PASSWORD COOLDOWN
-# ============================================================
-
-def is_on_password_cooldown(chat_id):
-
-    expiry = PASSWORD_COOLDOWNS.get(
-        chat_id
-    )
-
-    # No cooldown
-    if expiry is None:
-
-        return False, 0
-
-    remaining = (
-        expiry - time.time()
-    )
-
-    # Cooldown expired
-    if remaining <= 0:
-
-        PASSWORD_COOLDOWNS.pop(
-            chat_id,
-            None
-        )
-
-        return False, 0
-
-    return True, int(
-        remaining
-    )
-
-
-# ============================================================
-# START ACTIVATION
-# ============================================================
-
-def start_activation(chat_id):
-
-    # Already activated
-    if chat_id in ACTIVATED_USERS:
-
-        send_message(
-            chat_id,
-            "✅ You are already activated.",
-            main_keyboard()
-        )
-
-        return
-
-    # Check cooldown
-    cooldown, remaining = (
-        is_on_password_cooldown(
-            chat_id
-        )
-    )
-
-    if cooldown:
-
-        send_message(
-            chat_id,
-            "🔒 Activation temporarily locked.\n\n"
-            f"⏳ Try again in: "
-            f"{format_remaining_time(remaining)}",
-            activation_keyboard()
-        )
-
-        return
-
-    # Put user into activation state
-    USER_STATE[chat_id] = {
-        "activation": True
-    }
-
-    send_message(
-        chat_id,
-        "🔐 Activation Required\n\n"
-        "First join our group back up: https://t.me/+fmsQBKZBcwc0M2E1\n\n"
-        "also join our channel: https://t.me/+xoBZcNpp76QyM2E1\n\n"
-        "You just need to join our group to activate the bot.\n\n"
-        "talk with Admin he give you the password free no payment\n\n"
-        "Please enter your activation password.\n\n"
-        "⚠️ If the password is incorrect, "
-        "activation will be locked for 1 hour.\n\n"
-        "Send /cancel to cancel.",
-        activation_keyboard()
-    )
-
-
-# ============================================================
-# PROCESS ACTIVATION PASSWORD
-# ============================================================
-
-def process_activation_password(
-    chat_id,
-    text
-):
-
-    # Cancel
-    if text == "/cancel":
-        USER_STATE.pop(chat_id, None)
-
-        send_message(
-            chat_id,
-            "❌ Activation cancelled.",
-            activation_keyboard()
-        )
-        return
-
-    # Check cooldown again
-    cooldown, remaining = is_on_password_cooldown(chat_id)
-
-    if cooldown:
-        USER_STATE.pop(chat_id, None)
-
-        send_message(
-            chat_id,
-            "🔒 Activation is locked.\n\n"
-            f"⏳ Try again in: "
-            f"{format_remaining_time(remaining)}",
-            activation_keyboard()
-        )
-        return
-
-    # ========================================================
-    # CORRECT PASSWORD
-    # ========================================================
-
-    if password_matches_user(chat_id, text):
-
-        record = ACTIVATION_PASSWORDS.get(str(chat_id))
-
-        # Mark the password as permanently used BEFORE activation
-        # is reported successful. It cannot be reused by this or
-        # another Telegram user.
-        record["used"] = True
-        record["used_at"] = int(time.time())
-
-        ACTIVATED_USERS.add(chat_id)
-        PASSWORD_COOLDOWNS.pop(chat_id, None)
-        USER_STATE.pop(chat_id, None)
-
-        save_activation_data()
-
-        send_message(
-            chat_id,
-            "✅ Activation Successful!\n\n"
-            "🔓 Bot unlocked.\n\n"
-            "Select a feature:",
-            main_keyboard()
-        )
-
-        return
-
-    # ========================================================
-    # WRONG / UNASSIGNED / ALREADY-USED PASSWORD
-    # ========================================================
-
-    PASSWORD_COOLDOWNS[chat_id] = (
-        time.time()
-        + WRONG_PASSWORD_COOLDOWN
-    )
-
-    USER_STATE.pop(chat_id, None)
-
-    send_message(
-        chat_id,
-        "❌ Invalid activation password.\n\n"
-        "🔒 The password is either not assigned to this Telegram "
-        "account, incorrect, or has already been used.\n\n"
-        "⏳ Try again after the 1-hour cooldown.",
-        activation_keyboard()
-    )
-
-
-# ============================================================
-# ESCAPE HTML
-# ============================================================
-
-def escape_html(text):
-
-    text = str(text)
-
-    text = text.replace(
-        "&",
-        "&amp;"
-    )
-
-    text = text.replace(
-        "<",
-        "&lt;"
-    )
-
-    text = text.replace(
-        ">",
-        "&gt;"
-    )
-
-    return text
-
-
-# ============================================================
-# CALL AUTHORIZED API
-# ============================================================
-
-def call_api(
-    api_name,
-    api_url,
-    query
-):
-
-    if not api_url:
-
-        return {
-            "api": api_name,
-            "status": "not_configured"
-        }
-
-    # Prevent placeholder API calls
-    if "YOUR-AUTHORIZED-API.example" in api_url:
-
-        print(
-            api_name,
-            "is not configured."
-        )
-
-        return {
-            "api": api_name,
-            "status": "not_configured"
-        }
+def fetch_all_currencies():
+    now = time.time()
+    if CURRENCY_CACHE["list"] and (now - CURRENCY_CACHE["ts"]) < CURRENCY_CACHE_TTL:
+        return CURRENCY_CACHE["list"]
+
+    merged = {}
+    for code, name in FIAT_FALLBACK:
+        merged[code] = {"code": code, "name": name}
 
     try:
-
-        encoded_query = quote_plus(
-            query
-        )
-
-        request_url = (
-            api_url
-            + encoded_query
-        )
-
-        print()
-        print("=" * 60)
-        print(
-            "API:",
-            api_name
-        )
-        print(
-            "Request:",
-            request_url
-        )
-        print("=" * 60)
-
-        response = HTTP.get(
-            request_url,
+        headers = {"x-api-key": NOWPAYMENTS_API_KEY}
+        r = HTTP.get(
+            NOWPAYMENTS_API_URL + "/currencies",
+            headers=headers,
             timeout=(API_CONNECT_TIMEOUT, API_READ_TIMEOUT)
         )
+        if r.status_code == 200:
+            data = r.json()
+            for code in data.get("currencies", []):
+                code_l = code.lower()
+                if code_l not in merged:
+                    merged[code_l] = {"code": code_l, "name": code_l.upper()}
+    except Exception as e:
+        print("fetch_all_currencies error:", e)
 
+    lst = sorted(merged.values(), key=lambda c: c["code"])
+    CURRENCY_CACHE["list"] = lst
+    CURRENCY_CACHE["ts"] = now
+    return lst
+
+def find_currencies(query, limit=10):
+    q = normalize_text(query)
+    if not q:
+        return []
+    lst = fetch_all_currencies()
+    exact, starts, contains = [], [], []
+    for c in lst:
+        code_l = c["code"].lower()
+        name_l = c["name"].lower()
+        if code_l == q or name_l == q:
+            exact.append(c)
+        elif code_l.startswith(q) or name_l.startswith(q):
+            starts.append(c)
+        elif q in code_l or q in name_l:
+            contains.append(c)
+    return (exact + starts + contains)[:limit]
+
+# ============================================================
+# NOWPAYMENTS MIN AMOUNT
+# ============================================================
+def get_min_amount(crypto_currency, fiat="usd"):
+    try:
+        params = {
+            "currency_from": crypto_currency,
+            "currency_to": fiat,
+            "fiat_equivalent": fiat,
+        }
+        headers = {"x-api-key": NOWPAYMENTS_API_KEY}
+        response = HTTP.get(
+            NOWPAYMENTS_API_URL + "/min-amount",
+            params=params, headers=headers,
+            timeout=(API_CONNECT_TIMEOUT, API_READ_TIMEOUT),
+        )
         response.raise_for_status()
+        data = response.json()
+        return data.get("min_amount"), data.get("fiat_equivalent")
+    except Exception as e:
+        print(f"min-amount error for {crypto_currency}: {e}")
+        return None, None
 
+def get_min_amount_cached(crypto_currency, fiat="usd"):
+    now = time.time()
+    cached = MIN_AMOUNT_CACHE.get(crypto_currency)
+    if cached and (now - cached[2]) < MIN_AMOUNT_CACHE_TTL:
+        return cached[0], cached[1]
+    mn, mf = get_min_amount(crypto_currency, fiat)
+    if mn is not None and mf is not None:
+        MIN_AMOUNT_CACHE[crypto_currency] = (mn, mf, now)
+    return mn, mf
+
+# ============================================================
+# KEYBOARDS
+# ============================================================
+def crypto_plan_keyboard(lang="en"):
+    return {
+        "keyboard": [
+            ["1 Month - $13.00",  "3 Months - $18.00"],
+            ["6 Months - $25.00", "1 Year - $35.00"],
+            [t(lang, "check_status_btn"), t(lang, "cancel_btn")],
+            [t(lang, "lang_btn")],
+        ],
+        "resize_keyboard": True,
+        "one_time_keyboard": False,
+    }
+
+def main_keyboard(lang="en"):
+    buttons = list(API_CONFIG.keys())
+    keyboard = []
+    for i in range(0, len(buttons), 2):
+        keyboard.append(buttons[i:i + 2])
+    keyboard.append([t(lang, "deactivate_btn"), t(lang, "cancel_btn")])
+    keyboard.append([t(lang, "lang_btn")])
+    return {
+        "keyboard": keyboard,
+        "resize_keyboard": True,
+        "one_time_keyboard": False,
+    }
+
+def language_keyboard():
+    items = list(LANGUAGES.items())
+    rows = []
+    for i in range(0, len(items), 2):
+        row = []
+        for code, name in items[i:i + 2]:
+            row.append({"text": name, "callback_data": f"lang:{code}"})
+        rows.append(row)
+    return {"inline_keyboard": rows}
+
+def currency_inline_keyboard(results):
+    rows = []
+    for c in results:
+        label = f"{c['code'].upper()} — {c['name']}"
+        rows.append([{"text": label, "callback_data": f"cur:{c['code']}"}])
+    rows.append([{"text": "❌ Cancel", "callback_data": "cur:cancel"}])
+    return {"inline_keyboard": rows}
+
+def popular_currency_keyboard(plan_id, lang="en"):
+    rows, row = [], []
+    for code in POPULAR_CODES:
+        row.append({"text": code.upper(), "callback_data": f"plan:{plan_id}:{code}"})
+        if len(row) == 3:
+            rows.append(row); row = []
+    if row:
+        rows.append(row)
+    rows.append([
+        {"text": t(lang, "search_currency"), "callback_data": f"search:{plan_id}"},
+        {"text": t(lang, "back"), "callback_data": "back:plans"},
+    ])
+    return {"inline_keyboard": rows}
+
+# ============================================================
+# NOWPAYMENTS PAYMENT CREATION
+# ============================================================
+def create_nowpayments_payment(chat_id, plan_id, pay_currency, charge_usd=None):
+    plan = PLANS.get(plan_id)
+    if not plan:
+        return {"error": "unknown_plan"}
+
+    if charge_usd is None:
+        charge_usd = float(plan["price_usd"])
+
+    order_id = f"tg_{chat_id}_{plan['days']}_{int(time.time())}"
+
+    payload = {
+        "price_amount": charge_usd,
+        "price_currency": "usd",
+        "pay_currency": pay_currency,
+        "order_id": order_id,
+        "order_description": f"Bot Activation - {plan['name']} - {chat_id}",
+    }
+    if IPN_CALLBACK_URL and IPN_CALLBACK_URL.startswith("http") and "your-app" not in IPN_CALLBACK_URL:
+        payload["ipn_callback_url"] = IPN_CALLBACK_URL
+
+    headers = {"x-api-key": NOWPAYMENTS_API_KEY, "Content-Type": "application/json"}
+
+    try:
+        response = HTTP.post(
+            NOWPAYMENTS_API_URL + "/payment",
+            json=payload, headers=headers,
+            timeout=(API_CONNECT_TIMEOUT, API_READ_TIMEOUT),
+        )
         try:
+            body = response.json()
+        except Exception:
+            return {"error": "api_error", "status": response.status_code,
+                    "message": response.text[:500]}
 
-            result = response.json()
-
-        except ValueError:
-
-            print(
-                api_name,
-                "returned non-JSON response"
-            )
-
-            return {
-                "api": api_name,
-                "status": "error"
-            }
-
-        return {
-
-            "api": api_name,
-
-            "status": "success",
-
-            "result": result
-        }
-
+        if response.status_code not in (200, 201):
+            return {"error": "api_error", "status": response.status_code,
+                    "message": body.get("message") or body.get("error") or str(body)}
+        if not body.get("pay_address"):
+            return {"error": "api_error", "status": response.status_code,
+                    "message": body.get("message") or "No pay_address in response"}
+        return body
     except requests.exceptions.Timeout:
-
-        print(
-            api_name,
-            "timeout"
-        )
-
-        return {
-            "api": api_name,
-            "status": "timeout"
-        }
-
-    except requests.exceptions.HTTPError as error:
-
-        print(
-            api_name,
-            "HTTP error:",
-            error
-        )
-
-        return {
-            "api": api_name,
-            "status": "http_error"
-        }
-
-    except requests.exceptions.RequestException as error:
-
-        print(
-            api_name,
-            "request error:",
-            error
-        )
-
-        return {
-            "api": api_name,
-            "status": "error"
-        }
-
-    except Exception as error:
-
-        print(
-            api_name,
-            "unexpected error:",
-            error
-        )
-
-        return {
-            "api": api_name,
-            "status": "error"
-        }
-
+        return {"error": "timeout"}
+    except requests.exceptions.RequestException as e:
+        return {"error": "network", "message": str(e)}
+    except Exception as e:
+        return {"error": "unexpected", "message": str(e)}
 
 # ============================================================
-# SEND LONG MESSAGE
+# IPN WEBHOOK
 # ============================================================
+def verify_nowpayments_ipn(request_body, received_signature):
+    try:
+        body = request_body if isinstance(request_body, dict) else json.loads(request_body)
+        sorted_body = json.dumps(body, sort_keys=True, separators=(",", ":"))
+        expected = hmac.new(
+            NOWPAYMENTS_IPN_SECRET.encode("utf-8"),
+            sorted_body.encode("utf-8"),
+            hashlib.sha512,
+        ).hexdigest()
+        return hmac.compare_digest(expected, received_signature)
+    except Exception as e:
+        print("IPN Verification Error:", e)
+        return False
 
-def send_long_message(
-    chat_id,
-    text,
-    keyboard=None
-):
+@app.route("/nowpayments_webhook", methods=["POST"])
+def nowpayments_webhook():
+    raw_body = request.data.decode("utf-8")
+    sig = request.headers.get("x-nowpayments-sig")
+    if not sig or not verify_nowpayments_ipn(raw_body, sig):
+        return jsonify({"status": "invalid signature"}), 400
 
-    max_length = 3900
+    try:
+        data = json.loads(raw_body)
+        status = data.get("payment_status")
+        order_id = data.get("order_id")
+        if status in ("finished", "confirmed") and order_id:
+            parts = order_id.split("_")
+            if len(parts) >= 4 and parts[0] == "tg":
+                user_id = int(parts[1])
+                days = int(parts[2])
+                current = ACTIVATED_USERS.get(user_id, 0)
+                if current < time.time():
+                    current = time.time()
+                new_expiry = current + (days * 86400)
+                ACTIVATED_USERS[user_id] = new_expiry
+                save_activation_data()
+                lang = get_lang(user_id)
+                expiry_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(new_expiry))
+                send_message(
+                    user_id,
+                    f"{t(lang, 'payment_confirmed')}\n\n"
+                    f"{t(lang, 'activated_days', days=days)}\n"
+                    f"{t(lang, 'expiry')}: <code>{expiry_str}</code>\n\n"
+                    f"{t(lang, 'select_feature')}",
+                    main_keyboard(lang),
+                )
+    except Exception as e:
+        print("Error processing webhook:", e)
 
-    if len(text) <= max_length:
+    return jsonify({"status": "ok"}), 200
 
-        send_message(
-            chat_id,
-            text,
-            keyboard
-        )
+# ============================================================
+# HELPERS
+# ============================================================
+def is_active(chat_id):
+    exp = ACTIVATED_USERS.get(chat_id)
+    return bool(exp and exp > time.time())
 
+def create_payment_and_send(chat_id, plan_id, pay_currency):
+    lang = get_lang(chat_id)
+    plan = PLANS.get(plan_id)
+    if not plan:
+        send_message(chat_id, "Unknown plan.", crypto_plan_keyboard(lang))
         return
 
-    start = 0
+    send_message(chat_id, t(lang, "generating"))
 
-    while start < len(text):
+    charge_usd = float(plan["price_usd"])
+    mn, mf = get_min_amount_cached(pay_currency, "usd")
+    if mf is not None and charge_usd < float(mf):
+        charge_usd = round(float(mf) * 1.05, 2)
 
-        chunk = text[
-            start:start + max_length
-        ]
+    payment = create_nowpayments_payment(chat_id, plan_id, pay_currency, charge_usd=charge_usd)
 
-        send_message(
-            chat_id,
-            chunk
+    if payment and payment.get("error"):
+        err = payment.get("error")
+        msg_text = payment.get("message", "")
+        if err == "timeout":
+            send_message(chat_id, t(lang, "payment_timeout"), crypto_plan_keyboard(lang))
+        else:
+            send_message(
+                chat_id,
+                f"{t(lang, 'payment_api_error')}\n\n"
+                f"<code>{err}: {msg_text[:400]}</code>\n\n"
+                f"{t(lang, 'try_again')}",
+                crypto_plan_keyboard(lang),
+            )
+        return
+
+    if not payment or not payment.get("pay_address"):
+        send_message(chat_id, t(lang, "try_again"), crypto_plan_keyboard(lang))
+        return
+
+    pay_address = payment["pay_address"]
+    pay_amount = payment.get("pay_amount")
+    pay_curr = prettify_currency(payment.get("pay_currency") or pay_currency)
+
+    try:
+        qr_data = build_payment_uri(
+            pay_currency, pay_address,
+            amount=pay_amount if pay_currency in ("btc", "ltc") else None,
         )
-
-        start += max_length
-
-
-    if keyboard is not None:
-
-        send_message(
-            chat_id,
-            "✅ Finished.",
-            keyboard
+        qr_bytes = generate_qr_bytes(qr_data)
+        send_photo(
+            chat_id, qr_bytes,
+            caption=f"🪙 <b>{pay_curr} Payment</b>",
+            keyboard=copy_address_keyboard(pay_address),
         )
+    except Exception as e:
+        print("QR error:", e)
 
+    send_message(
+        chat_id,
+        t(lang, "send_amount", amount=pay_amount, currency=pay_curr)
+        + f"\n<code>{pay_address}</code>",
+        copy_address_keyboard(pay_address),
+    )
 
 # ============================================================
-# PROCESS TELEGRAM UPDATE
+# CALLBACK HANDLER
 # ============================================================
+def process_callback(cb):
+    data = cb.get("data", "") or ""
+    msg = cb.get("message") or {}
+    chat_id = (msg.get("chat") or {}).get("id")
+    msg_id = msg.get("message_id")
+    cb_id = cb.get("id")
+    if chat_id is None:
+        return
+    lang = get_lang(chat_id)
 
+    # === Language chosen → delete picker, then show plan/feature menu ===
+    if data.startswith("lang:"):
+        code = data.split(":", 1)[1]
+        if code in LANGUAGES:
+            set_lang(chat_id, code)
+            answer_callback(cb_id, t(code, "language_set"))
+
+            # 1) Remove the inline language picker message
+            if msg_id:
+                delete_message(chat_id, msg_id)
+
+            # 2) Show the correct keyboard in the newly-chosen language
+            if is_active(chat_id):
+                send_message(
+                    chat_id,
+                    t(code, "already_active") + "\n\n" + t(code, "select_feature"),
+                    main_keyboard(code),
+                )
+            else:
+                send_message(
+                    chat_id,
+                    t(code, "welcome") + "\n\n" + t(code, "select_plan"),
+                    crypto_plan_keyboard(code),
+                )
+        return
+
+    if data == "back:plans":
+        answer_callback(cb_id)
+        send_message(chat_id, t(lang, "select_plan"), crypto_plan_keyboard(lang))
+        return
+
+    if data.startswith("search:"):
+        plan_id = data.split(":", 1)[1]
+        USER_STATE[chat_id] = {"flow": "search_currency", "plan_id": plan_id}
+        answer_callback(cb_id)
+        send_message(chat_id, t(lang, "send_currency_code"))
+        return
+
+    if data == "cur:cancel":
+        answer_callback(cb_id)
+        USER_STATE.pop(chat_id, None)
+        send_message(chat_id, t(lang, "cancelled"), crypto_plan_keyboard(lang))
+        return
+
+    if data.startswith("cur:"):
+        code = data.split(":", 1)[1]
+        state = USER_STATE.get(chat_id, {})
+        plan_id = state.get("plan_id")
+        if not plan_id:
+            answer_callback(cb_id, "Please select a plan first.")
+            return
+        answer_callback(cb_id)
+        create_payment_and_send(chat_id, plan_id, code)
+        USER_STATE.pop(chat_id, None)
+        return
+
+    if data.startswith("plan:"):
+        parts = data.split(":")
+        if len(parts) != 3:
+            answer_callback(cb_id)
+            return
+        _, plan_id, code = parts
+        answer_callback(cb_id)
+        create_payment_and_send(chat_id, plan_id, code)
+        USER_STATE.pop(chat_id, None)
+        return
+
+# ============================================================
+# USER BOT
+# ============================================================
 def process_update(update):
+    if "callback_query" in update:
+        process_callback(update["callback_query"])
+        return
 
     if "message" not in update:
         return
-
     message = update["message"]
-
-    chat = message.get(
-        "chat",
-        {}
-    )
-
-    chat_id = chat.get(
-        "id"
-    )
-
+    chat_id = message.get("chat", {}).get("id")
     if chat_id is None:
         return
 
-    text = message.get(
-        "text",
-        ""
-    )
-
-    if not isinstance(
-        text,
-        str
-    ):
+    text = message.get("text", "")
+    if not isinstance(text, str):
         return
-
     text = text.strip()
+    lang = get_lang(chat_id)
 
-
-    # ========================================================
-    # /START
-    # ========================================================
-
+    # === /start: ONLY show the language picker (step 1) ===
     if text == "/start":
+        USER_STATE.pop(chat_id, None)
+        send_message(chat_id, t(lang, "choose_language"), language_keyboard())
+        return
 
-        USER_STATE.pop(
-            chat_id,
-            None
-        )
+    # /lang and 🌐 Language button → reopen picker
+    if text in ("/lang", "/language") or is_button(text, "lang_btn", lang):
+        send_message(chat_id, t(lang, "choose_language"), language_keyboard())
+        return
 
+    if text == "/cancel" or is_button(text, "cancel_btn", lang):
+        USER_STATE.pop(chat_id, None)
+        kb = main_keyboard(lang) if is_active(chat_id) else crypto_plan_keyboard(lang)
+        send_message(chat_id, t(lang, "cancelled") + "\n\n" + t(lang, "select_feature"), kb)
+        return
+
+    if is_button(text, "check_status_btn", lang):
+        if is_active(chat_id):
+            expiry_str = time.strftime("%Y-%m-%d %H:%M:%S",
+                                       time.localtime(ACTIVATED_USERS[chat_id]))
+            send_message(chat_id,
+                         f"{t(lang, 'status_active')}\n{t(lang, 'expiry')}: <code>{expiry_str}</code>",
+                         main_keyboard(lang))
+        else:
+            send_message(chat_id,
+                         f"{t(lang, 'status_inactive')}\n\n{t(lang, 'buy_plan')}",
+                         crypto_plan_keyboard(lang))
+        return
+
+    if is_button(text, "deactivate_btn", lang):
         if chat_id in ACTIVATED_USERS:
-
-            send_message(
-                chat_id,
-                "✅ You are already activated.\n\n"
-                "Select a feature:",
-                main_keyboard()
-            )
-
-        else:
-
-            cooldown, remaining = (
-                is_on_password_cooldown(
-                    chat_id
-                )
-            )
-
-            if cooldown:
-
-                send_message(
-                    chat_id,
-                    "🔒 Bot is temporarily locked.\n\n"
-                    f"⏳ Try again in: "
-                    f"{format_remaining_time(remaining)}",
-                    activation_keyboard()
-                )
-
-            else:
-
-                send_message(
-                    chat_id,
-                    "👋 Welcome!\n\n"
-                    "🔒 This bot is locked.\n\n"
-                    "Tap 🔐 Activate Bot to continue.",
-                    activation_keyboard()
-                )
-
+            del ACTIVATED_USERS[chat_id]
+            save_activation_data()
+        USER_STATE.pop(chat_id, None)
+        send_message(chat_id, t(lang, "deactivated_msg"), crypto_plan_keyboard(lang))
         return
 
-
-    # ========================================================
-    # ACTIVATION BUTTON
-    # ========================================================
-
-    if text == "🔐 Activate Bot":
-
-        start_activation(
-            chat_id
-        )
-
+    plan_map = {
+        normalize_text("1 Month - $13.00"):  "plan_1",
+        normalize_text("3 Months - $18.00"): "plan_2",
+        normalize_text("6 Months - $25.00"): "plan_3",
+        normalize_text("1 Year - $35.00"):   "plan_4",
+    }
+    ntext = normalize_text(text)
+    if ntext in plan_map:
+        plan_id = plan_map[ntext]
+        USER_STATE[chat_id] = {"flow": "select_currency", "plan_id": plan_id}
+        send_message(chat_id,
+                     t(lang, "select_currency",
+                       plan=t(lang, plan_id),
+                       price=f"{PLANS[plan_id]['price_usd']:.2f}"))
+        send_message(chat_id, t(lang, "popular"), popular_currency_keyboard(plan_id, lang))
         return
 
+    state = USER_STATE.get(chat_id, {})
 
-    # ========================================================
-    # ACTIVATION PASSWORD STATE
-    # ========================================================
-
-    if chat_id in USER_STATE:
-
-        state = USER_STATE.get(
-            chat_id,
-            {}
-        )
-
-        if state.get(
-            "activation"
-        ):
-
-            process_activation_password(
-                chat_id,
-                text
-            )
-
+    if state.get("flow") == "search_currency":
+        results = find_currencies(text, limit=12)
+        if not results:
+            send_message(chat_id, t(lang, "no_match"))
             return
-
-
-    # ========================================================
-    # LOCKED USER
-    # ========================================================
-
-    if chat_id not in ACTIVATED_USERS:
-
-        cooldown, remaining = (
-            is_on_password_cooldown(
-                chat_id
-            )
-        )
-
-        if cooldown:
-
-            send_message(
-                chat_id,
-                "🔒 Bot is locked.\n\n"
-                f"⏳ Try again in: "
-                f"{format_remaining_time(remaining)}",
-                activation_keyboard()
-            )
-
-        else:
-
-            send_message(
-                chat_id,
-                "🔒 Bot is locked.\n\n"
-                "Please tap 🔐 Activate Bot first.",
-                activation_keyboard()
-            )
-
+        send_message(chat_id, t(lang, "found_currencies", n=len(results)),
+                     currency_inline_keyboard(results))
         return
 
-
-    # ========================================================
-    # CANCEL
-    # ========================================================
-
-    if text in (
-        "/cancel",
-        "❌ Cancel"
-    ):
-
-        USER_STATE.pop(
-            chat_id,
-            None
-        )
-
-        send_message(
-            chat_id,
-            "❌ Cancelled.\n\n"
-            "Select a feature:",
-            main_keyboard()
-        )
-
-        return
-
-
-    # ========================================================
-    # DEACTIVATE
-    # ========================================================
-
-    if text == "🔒 Deactivate":
-
-        ACTIVATED_USERS.discard(
-            chat_id
-        )
-
-        USER_STATE.pop(
-            chat_id,
-            None
-        )
-
-        send_message(
-            chat_id,
-            "🔒 Bot deactivated.\n\n"
-            "Tap 🔐 Activate Bot to unlock it again.",
-            activation_keyboard()
-        )
-
-        return
-
-
-    # ========================================================
-    # API BUTTON
-    # ========================================================
-
-    # ========================================================
-    # API BUTTON
-    # ========================================================
-
-    # Telegram button text can contain leading/trailing spaces.
-    # Match it after stripping whitespace so buttons such as
-    # " 🎲Aadhaar Info " still work reliably.
-    api_name = next(
-        (name for name in API_CONFIG if name.strip() == text.strip()),
-        None
-    )
-
-    if api_name is not None:
-
-        config = API_CONFIG[api_name]
-
-        USER_STATE[chat_id] = {
-            "api_name": api_name
-        }
-
-        send_message(
-            chat_id,
-            config["prompt"]
-            + "\n\n"
-            + "Send /cancel to cancel.",
-            main_keyboard()
-        )
-
-        return
-
-
-    # ========================================================
-    # API QUERY
-    # ========================================================
-
-    if chat_id in USER_STATE:
-
-        state = USER_STATE.get(
-            chat_id,
-            {}
-        )
-
-        # Activation state is handled above. Any remaining state should
-        # represent an API selection awaiting its query.
+    if state.get("flow") == "api_query":
         api_name = state.get("api_name")
-
         if not api_name:
             USER_STATE.pop(chat_id, None)
-
-            send_message(
-                chat_id,
-                "❓ Please select a feature.",
-                main_keyboard()
-            )
-
+            send_message(chat_id, t(lang, "select_option"), main_keyboard(lang))
             return
-
         query = text.strip()
-
         if not query:
-
-            send_message(
-                chat_id,
-                "❌ Query cannot be empty."
-            )
-
+            send_message(chat_id, "❌ Query cannot be empty.")
             return
-
         config = API_CONFIG.get(api_name)
-
-        if not config:
-
-            USER_STATE.pop(
-                chat_id,
-                None
-            )
-
-            send_message(
-                chat_id,
-                "❌ API configuration unavailable.",
-                main_keyboard()
-            )
-
-            return
-
-
-        # ----------------------------------------------------
-        # SEARCH
-        # ----------------------------------------------------
-
-        send_message(
-            chat_id,
-            "⏳ Searching..."
-        )
-
-
-        # ----------------------------------------------------
-        # CALL API
-        # ----------------------------------------------------
-
-        result = call_api(
-            api_name,
-            config["url"],
-            query
-        )
-
-
-        # ----------------------------------------------------
-        # HIDE ERRORS FROM TELEGRAM
-        # ----------------------------------------------------
-
-        if result.get(
-            "status"
-        ) != "success":
-
-            USER_STATE.pop(
-                chat_id,
-                None
-            )
-
-            send_message(
-                chat_id,
-                "❌ No result available.",
-                main_keyboard()
-            )
-
-            return
-
-
-        # ----------------------------------------------------
-        # API RESULT
-        # ----------------------------------------------------
-
-        api_result = result.get(
-            "result"
-        )
-
-
-        # ----------------------------------------------------
-        # FORMAT JSON
-        # ----------------------------------------------------
-
+        send_message(chat_id, t(lang, "searching"))
         try:
-
-            formatted = json.dumps(
-                api_result,
-                indent=2,
-                ensure_ascii=False
+            response = HTTP.get(
+                config["url"] + quote_plus(query),
+                timeout=(API_CONNECT_TIMEOUT, API_READ_TIMEOUT),
             )
-
-        except Exception:
-
-            formatted = str(
-                api_result
-            )
-
-
-        formatted = escape_html(
-            formatted
-        )
-
-
-        response_text = (
-            "<pre>"
-            + formatted
-            + "</pre>"
-        )
-
-
-        # ----------------------------------------------------
-        # SEND RESULT
-        # ----------------------------------------------------
-
-        send_long_message(
-            chat_id,
-            response_text,
-            main_keyboard()
-        )
-
-
-        # ----------------------------------------------------
-        # CLEAR STATE
-        # ----------------------------------------------------
-
-        USER_STATE.pop(
-            chat_id,
-            None
-        )
-
+            response.raise_for_status()
+            api_result = response.json()
+            formatted = json.dumps(api_result, indent=2, ensure_ascii=False)
+            formatted = formatted.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            max_length = 3900
+            if len(formatted) <= max_length:
+                send_message(chat_id, f"<pre>{formatted}</pre>", main_keyboard(lang))
+            else:
+                for i in range(0, len(formatted), max_length):
+                    send_message(chat_id, f"<pre>{formatted[i:i+max_length]}</pre>")
+                send_message(chat_id, "✅ Finished.", main_keyboard(lang))
+        except Exception as e:
+            print("API Error:", e)
+            send_message(chat_id, t(lang, "no_result"), main_keyboard(lang))
+        USER_STATE.pop(chat_id, None)
         return
 
+    if not is_active(chat_id):
+        send_message(chat_id,
+                     f"{t(lang, 'locked')}\n\n{t(lang, 'buy_plan')}",
+                     crypto_plan_keyboard(lang))
+        return
 
-    # ========================================================
-    # UNKNOWN MESSAGE
-    # ========================================================
+    api_name = next((name for name in API_CONFIG if name.strip() == text.strip()), None)
+    if api_name is not None:
+        config = API_CONFIG[api_name]
+        USER_STATE[chat_id] = {"flow": "api_query", "api_name": api_name}
+        send_message(chat_id, config["prompt"] + "\n\n" + t(lang, "send_cancel"),
+                     main_keyboard(lang))
+        return
 
-    send_message(
-        chat_id,
-        "❓ Please select an option from the menu.",
-        main_keyboard()
-    )
-
-
+    send_message(chat_id, t(lang, "select_option"), main_keyboard(lang))
 
 # ============================================================
-# ADMIN BOTS (TWO SEPARATE ADMIN BOTS)
+# ADMIN BOT
 # ============================================================
-
 def admin_send_message(bot_number, chat_id, text):
-    """Send a message through ADMIN BOT 1 or ADMIN BOT 2."""
     api = ADMIN_TELEGRAM_APIS.get(bot_number)
     if not api:
-        return None
-
+        return
     try:
-        response = HTTP.post(
-            api + "/sendMessage",
-            data={
-                "chat_id": chat_id,
-                "text": text
-            },
-            timeout=(TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT)
-        )
-        response.raise_for_status()
-        return response.json()
-
-    except Exception as error:
-        print(f"Admin bot {bot_number} Telegram error:", error)
-        return None
-
+        HTTP.post(api + "/sendMessage",
+                  data={"chat_id": chat_id, "text": text},
+                  timeout=(5, 35))
+    except Exception as e:
+        print(f"Admin bot {bot_number} error:", e)
 
 def admin_get_updates(bot_number, offset=None):
-    """Read updates from ADMIN BOT 1 or ADMIN BOT 2."""
     api = ADMIN_TELEGRAM_APIS.get(bot_number)
-    if not api:
-        return None
-
     params = {"timeout": 30}
-
-    if offset is not None:
+    if offset:
         params["offset"] = offset
-
     try:
-        response = HTTP.get(
-            api + "/getUpdates",
-            params=params,
-            timeout=(TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT)
-        )
-        response.raise_for_status()
-        return response.json()
-
-    except Exception as error:
-        print(f"Admin bot {bot_number} getUpdates error:", error)
+        r = HTTP.get(api + "/getUpdates", params=params, timeout=(5, 35))
+        return r.json()
+    except Exception:
         return None
-
-
-def admin_help(bot_number, chat_id):
-    admin_send_message(
-        bot_number,
-        chat_id,
-        "🛠 ADMIN PANEL\n\n"
-        "/generate USER_ID - Generate a unique password\n"
-        "/list - Show password records\n"
-        "/revoke USER_ID - Revoke unused password\n"
-        "/deactivate USER_ID - Deactivate a user\n"
-        "/help - Show this menu\n\n"
-        "🔐 Passwords are shown only in the ADMIN bot.\n"
-        "👤 The USER bot never displays generated passwords."
-    )
-
-
-def admin_list_passwords(bot_number, chat_id):
-    if not ACTIVATION_PASSWORDS:
-        admin_send_message(
-            bot_number,
-            chat_id,
-            "📭 No activation password records."
-        )
-        return
-
-    lines = ["🔐 ACTIVATION PASSWORDS", ""]
-
-    for user_id, record in ACTIVATION_PASSWORDS.items():
-        status = "USED" if record.get("used") else "UNUSED"
-        password = record.get("password", "unknown")
-
-        lines.append(
-            f"👤 User ID: {user_id}\n"
-            f"🔑 Password: {password}\n"
-            f"📌 Status: {status}\n"
-        )
-
-    admin_send_message(bot_number, chat_id, "\n".join(lines))
-
 
 def process_admin_update(bot_number, update):
     if "message" not in update:
         return
-
     message = update["message"]
-    chat = message.get("chat", {})
-    chat_id = chat.get("id")
-    text = message.get("text", "")
+    chat_id = message.get("chat", {}).get("id")
+    text = message.get("text", "").strip()
 
-    if chat_id is None or not isinstance(text, str):
+    if chat_id not in ADMIN_USER_IDS_1:
+        admin_send_message(bot_number, chat_id, "⛔ You are not authorized.")
         return
-
-    # Admin access is checked against the Telegram user ID
-    # assigned specifically to this admin bot.
-    allowed_admin_ids = (
-        ADMIN_USER_IDS_1
-        if bot_number == 1
-        else ADMIN_USER_IDS_2
-    )
-
-    if chat_id not in allowed_admin_ids:
-        admin_send_message(
-            bot_number,
-            chat_id,
-            "⛔ You are not authorized to use this admin bot."
-        )
-        return
-
-    text = text.strip()
 
     if text in ("/start", "/help"):
-        admin_help(bot_number, chat_id)
+        admin_send_message(bot_number, chat_id,
+            "🛠 ADMIN PANEL\n\n"
+            "/add_user USER_ID DAYS\n"
+            "/list\n"
+            "/deactivate USER_ID"
+        )
         return
 
     if text == "/list":
-        admin_list_passwords(bot_number, chat_id)
+        if not ACTIVATED_USERS:
+            admin_send_message(bot_number, chat_id, "📭 No active users.")
+            return
+        lines = ["👥 ACTIVE USERS\n"]
+        for uid, expiry in ACTIVATED_USERS.items():
+            exp_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(expiry))
+            status = "✅" if expiry > time.time() else "❌"
+            lines.append(f"{status} {uid} — {exp_str}")
+        admin_send_message(bot_number, chat_id, "\n".join(lines))
         return
 
-    if text.startswith("/generate"):
-        parts = text.split(maxsplit=1)
-
-        if len(parts) != 2:
-            admin_send_message(
-                bot_number,
-                chat_id,
-                "Usage:\n/generate USER_ID\n\n"
-                "Example:\n/generate 123456789"
-            )
+    if text.startswith("/add_user"):
+        parts = text.split()
+        if len(parts) != 3:
+            admin_send_message(bot_number, chat_id, "Usage: /add_user USER_ID DAYS")
             return
-
-        target_user_id = normalize_user_id(parts[1])
-
-        if target_user_id is None:
-            admin_send_message(
-                bot_number,
-                chat_id,
-                "❌ Invalid Telegram user ID."
-            )
-            return
-
-        password, error = admin_generate_password(target_user_id)
-
-        if error:
-            admin_send_message(
-                bot_number,
-                chat_id,
-                "❌ " + error
-            )
-            return
-
-        admin_send_message(
-            bot_number,
-            chat_id,
-            "✅ NEW ACTIVATION PASSWORD\n\n"
-            f"👤 User ID: {target_user_id}\n"
-            f"🔑 Password: {password}\n\n"
-            "⚠️ This password is valid ONLY for this Telegram user.\n"
-            "⚠️ It becomes permanently invalid after one successful use.\n"
-            "🔒 The USER bot will never display this password."
-        )
-        return
-
-    if text.startswith("/revoke"):
-        parts = text.split(maxsplit=1)
-
-        if len(parts) != 2:
-            admin_send_message(
-                bot_number,
-                chat_id,
-                "Usage:\n/revoke USER_ID"
-            )
-            return
-
-        ok, message_text = admin_revoke_password(parts[1])
-
-        admin_send_message(
-            bot_number,
-            chat_id,
-            ("✅ " if ok else "❌ ") + message_text
-        )
+        try:
+            target_id = int(parts[1]); days = int(parts[2])
+            current = ACTIVATED_USERS.get(target_id, 0)
+            if current < time.time():
+                current = time.time()
+            ACTIVATED_USERS[target_id] = current + (days * 86400)
+            save_activation_data()
+            admin_send_message(bot_number, chat_id, f"✅ User {target_id} activated for {days} days.")
+        except ValueError:
+            admin_send_message(bot_number, chat_id, "❌ Invalid format.")
         return
 
     if text.startswith("/deactivate"):
-        parts = text.split(maxsplit=1)
-
+        parts = text.split()
         if len(parts) != 2:
-            admin_send_message(
-                bot_number,
-                chat_id,
-                "Usage:\n/deactivate USER_ID"
-            )
+            admin_send_message(bot_number, chat_id, "Usage: /deactivate USER_ID")
             return
-
-        target_user_id = normalize_user_id(parts[1])
-
-        if target_user_id is None:
-            admin_send_message(
-                bot_number,
-                chat_id,
-                "❌ Invalid Telegram user ID."
-            )
-            return
-
-        ACTIVATED_USERS.discard(target_user_id)
-        USER_STATE.pop(target_user_id, None)
-        save_activation_data()
-
-        admin_send_message(
-            bot_number,
-            chat_id,
-            f"🔒 User {target_user_id} has been deactivated.\n\n"
-            "Generate a NEW password if they need to activate again."
-        )
+        try:
+            target_id = int(parts[1])
+            if target_id in ACTIVATED_USERS:
+                del ACTIVATED_USERS[target_id]
+                save_activation_data()
+                admin_send_message(bot_number, chat_id, f"🔒 User {target_id} deactivated.")
+            else:
+                admin_send_message(bot_number, chat_id, "❌ User not found.")
+        except ValueError:
+            admin_send_message(bot_number, chat_id, "❌ Invalid ID.")
         return
 
-    admin_send_message(
-        bot_number,
-        chat_id,
-        "❓ Unknown command.\n\nUse /help."
-    )
-
-
 def admin_bot_loop(bot_number):
-    """Long-polling loop for one of the two separate ADMIN bots."""
     print(f"Admin bot {bot_number} polling active.")
-
     offset = None
-
     while True:
         try:
             result = admin_get_updates(bot_number, offset)
-
-            if result is None:
-                time.sleep(3)
-                continue
-
-            if not result.get("ok"):
-                print(f"Admin bot {bot_number} Telegram API error:", result)
-                time.sleep(3)
-                continue
-
-            for update in result.get("result", []):
-                update_id = update.get("update_id")
-
-                if update_id is not None:
-                    offset = update_id + 1
-
-                try:
+            if result and result.get("ok"):
+                for update in result.get("result", []):
+                    offset = update.get("update_id", 0) + 1
                     process_admin_update(bot_number, update)
-                except Exception as error:
-                    print(
-                        f"Admin bot {bot_number} processing error:",
-                        error
-                    )
-
-        except Exception as error:
-            print(f"Admin bot {bot_number} loop error:", error)
+            time.sleep(1)
+        except Exception as e:
+            print(f"Admin bot {bot_number} loop error:", e)
             time.sleep(3)
-
 
 # ============================================================
 # MAIN
 # ============================================================
-
 def main():
     load_activation_data()
 
-
-    # ========================================================
-    # CHECK BOT TOKEN
-    # ========================================================
-
-    if (
-        not USER_BOT_TOKEN
-        or
-        USER_BOT_TOKEN == "PUT_USER_BOT_TOKEN_HERE"
-    ):
-
-        print(
-            "ERROR: Set BOT_TOKEN in the code first."
-        )
-
+    if not USER_BOT_TOKEN or USER_BOT_TOKEN == "YOUR_USER_BOT_TOKEN":
+        print("ERROR: Set USER_BOT_TOKEN environment variable.")
         return
-
-
-    # ========================================================
-    # CHECK BOT TOKENS
-    # ========================================================
-
-    if (
-        not USER_BOT_TOKEN
-        or not ADMIN_BOT_TOKEN_1
-        or not ADMIN_BOT_TOKEN_2
-    ):
-        print("ERROR: Set USER_BOT_TOKEN, ADMIN_BOT_TOKEN_1 and ADMIN_BOT_TOKEN_2.")
-        return
-
-
-    # ========================================================
-    # TEST TELEGRAM CONNECTION
-    # ========================================================
 
     try:
-
-        response = HTTP.get(
-            USER_TELEGRAM_API + "/getMe",
-            timeout=(TELEGRAM_CONNECT_TIMEOUT, 10)
-        )
-
-        response.raise_for_status()
-
-        bot_info = response.json()
-
-        if not bot_info.get("ok"):
-
-            print(
-                "ERROR: Telegram token is invalid."
-            )
-
+        r = HTTP.get(USER_TELEGRAM_API + "/getMe", timeout=(5, 10))
+        info = r.json()
+        if not info.get("ok"):
+            print("ERROR: Invalid Telegram token.")
             return
-
-        username = (
-            bot_info
-            .get(
-                "result",
-                {}
-            )
-            .get(
-                "username",
-                "unknown"
-            )
-        )
-
-        print(
-            "Connected to Telegram bot:",
-            username
-        )
-
-    except Exception as error:
-
-        print(
-            "Could not connect to Telegram:",
-            error
-        )
-
+        print("Connected to Telegram bot:", info["result"]["username"])
+    except Exception as e:
+        print("Could not connect to Telegram:", e)
         return
 
+    if not IPN_CALLBACK_URL:
+        print("=" * 60)
+        print("⚠️  IPN_CALLBACK_URL not set — users won't auto-activate.")
+        print("=" * 60)
 
-    # Start BOTH admin pollers.
-    for bot_number in (1, 2):
-        admin_thread = threading.Thread(
-            target=admin_bot_loop,
-            args=(bot_number,),
-            name=f"admin-bot-{bot_number}",
-            daemon=True
-        )
-        admin_thread.start()
-
-
-    # ========================================================
-    # START
-    # ========================================================
+    threading.Thread(target=admin_bot_loop, args=(1,), daemon=True).start()
 
     print("=" * 60)
-
-    print(
-        "Telegram Bot Started"
-    )
-
+    print("Telegram Bot Started (language-first flow, all currencies)")
     print("=" * 60)
-
-    print(
-        "API buttons:",
-        len(API_CONFIG)
-    )
-
-    print(
-        "Activation system: ENABLED"
-    )
-
-    print(
-        "Wrong password cooldown: 1 hour"
-    )
-
-    print(
-        "Errors hidden from Telegram"
-    )
-
-    print(
-        "Long polling active (USER BOT + ADMIN BOT 1 + ADMIN BOT 2)"
-    )
-    print(
-        "Admin Bot 1 authorized IDs:",
-        sorted(ADMIN_USER_IDS_1)
-    )
-    print(
-        "Admin Bot 2 authorized IDs:",
-        sorted(ADMIN_USER_IDS_2)
-    )
-
-    print("=" * 60)
-
 
     offset = None
-
-
-    # ========================================================
-    # LONG POLLING LOOP
-    # ========================================================
-
     while True:
-
         try:
-
-            result = get_updates(
-                offset
-            )
-
-            if result is None:
-
-                time.sleep(3)
-
-                continue
-
-
-            if not result.get(
-                "ok"
-            ):
-
-                print(
-                    "Telegram API error:",
-                    result
-                )
-
-                time.sleep(3)
-
-                continue
-
-
-            updates = result.get(
-                "result",
-                []
-            )
-
-
-            for update in updates:
-
-                update_id = update.get(
-                    "update_id"
-                )
-
-
-                if update_id is not None:
-
-                    offset = (
-                        update_id + 1
-                    )
-
-
-                try:
-
-                    process_update(
-                        update
-                    )
-
-                except Exception as error:
-
-                    print(
-                        "Processing error:",
-                        error
-                    )
-
-
+            result = get_updates(offset)
+            if result and result.get("ok"):
+                for update in result.get("result", []):
+                    offset = update.get("update_id", 0) + 1
+                    process_update(update)
+            time.sleep(1)
         except KeyboardInterrupt:
-
-            print(
-                "\nBot stopped."
-            )
-
+            print("\nBot stopped.")
             break
-
-
-        except Exception as error:
-
-            print(
-                "Main loop error:",
-                error
-            )
-
+        except Exception as e:
+            print("Main loop error:", e)
             time.sleep(3)
 
-
-# ============================================================
-# START PROGRAM
-# ============================================================
-
 if __name__ == "__main__":
-
     main()

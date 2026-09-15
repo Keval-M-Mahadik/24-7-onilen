@@ -220,9 +220,9 @@ def is_banned(chat_id):
 # ==========================================
 # IMAGES
 # ==========================================
-WELCOME_IMG = os.getenv("WELCOME_IMG", r"images\welcome.png")
-OSINT_IMG   = os.getenv("OSINT_IMG",   r"images\osint.png")
-PAYMENT_IMG = os.getenv("PAYMENT_IMG", r"images\payment.png")
+WELCOME_IMG = os.getenv("WELCOME_IMG", "images/welcome.png")
+OSINT_IMG   = os.getenv("OSINT_IMG",   "images/osint.png")
+PAYMENT_IMG = os.getenv("PAYMENT_IMG", "images/payment.png")
 IMAGE_CACHE = {}
 
 def cache_image(path):

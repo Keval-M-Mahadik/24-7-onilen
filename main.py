@@ -33,6 +33,8 @@ def health():
         "ts": int(time.time()),
         "uptime_users_active": active,
         "uptime_users_total": total,
+        "banned": len(BANNED_USERS),
+        "maintenance": MAINTENANCE_MODE,
     })
 
 @app.route('/ping')
@@ -70,16 +72,12 @@ NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY", "ZQRJG4Z-5PQ48ZM-M5C8PVH-
 NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET", "Gsx0umqAvAcrfOGfEOguqrL9UjhmoHoH")
 
 IPN_CALLBACK_URL = os.getenv("IPN_CALLBACK_URL", "https://osint.onrender.com/nowpayments_webhook")
-
 NOWPAYMENTS_API_URL = "https://api.nowpayments.io/v1"
 
 # ==========================================
 # ADMIN AUTH CONFIG
 # ==========================================
-# 🔐 Shared password — YOU and all other admins use the SAME password to /login
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "mahesh@321").strip()
-
-# 👑 Owner — always admin, cannot be removed. Send /whoami to bot to learn your chat id.
 OWNER_ID = os.getenv("OWNER_ID", "6326027750").strip()
 
 # ==========================================
@@ -89,104 +87,176 @@ SELF_URL = os.getenv("SELF_URL", "https://osint.onrender.com")
 SELF_PING_INTERVAL = int(os.getenv("SELF_PING_INTERVAL", "600"))
 
 # ==========================================
-# ADMIN STORAGE
+# STORAGE
 # ==========================================
-ADMINS_FILE = os.getenv("ADMINS_FILE", "admins.json")
-PASSWORD_FILE = os.getenv("PASSWORD_FILE", "admin_password.json")
+ADMINS_FILE     = os.getenv("ADMINS_FILE",     "admins.json")
+PASSWORD_FILE   = os.getenv("PASSWORD_FILE",   "admin_password.json")
+BANNED_FILE     = os.getenv("BANNED_FILE",     "banned.json")
+NOTES_FILE      = os.getenv("NOTES_FILE",      "user_notes.json")
+ADMIN_LOG_FILE  = os.getenv("ADMIN_LOG_FILE",  "admin_log.json")
+LASTSEEN_FILE   = os.getenv("LASTSEEN_FILE",   "last_seen.json")
+
 DYNAMIC_ADMINS = set()
-CURRENT_PASSWORD = ADMIN_PASSWORD  # runtime-changeable via /setpassword
+CURRENT_PASSWORD = ADMIN_PASSWORD
+
+BANNED_USERS = {}
+USER_NOTES = {}
+ADMIN_LOG = []
+LAST_SEEN = {}
+MAINTENANCE_MODE = False
+ADMIN_LOG_MAX = 500
+
+# ==========================================
+# PERSISTENCE
+# ==========================================
+def _safe_load(path, default):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return default
+    except Exception as e:
+        print(f"⚠️ load {path} failed: {e}")
+        return default
+
+def _safe_save(path, data):
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception as e:
+        print(f"⚠️ save {path} failed: {e}")
 
 def load_password():
-    """Load persisted password (overrides env if present)."""
     global CURRENT_PASSWORD
-    try:
-        with open(PASSWORD_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            if data.get("password"):
-                CURRENT_PASSWORD = str(data["password"])
-                print("🔐 Loaded persisted admin password.")
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        print("Error loading password file:", e)
+    data = _safe_load(PASSWORD_FILE, {})
+    if data.get("password"):
+        CURRENT_PASSWORD = str(data["password"])
+        print("🔐 Loaded persisted admin password.")
 
 def save_password():
-    try:
-        with open(PASSWORD_FILE, "w", encoding="utf-8") as f:
-            json.dump({"password": CURRENT_PASSWORD}, f, indent=2)
-        print("💾 Password saved.")
-    except Exception as e:
-        print("Could not save password:", e)
+    _safe_save(PASSWORD_FILE, {"password": CURRENT_PASSWORD})
 
 def load_admins():
     global DYNAMIC_ADMINS
-    try:
-        with open(ADMINS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            DYNAMIC_ADMINS = set(int(x) for x in data)
-            print(f"✅ Loaded {len(DYNAMIC_ADMINS)} dynamic admins.")
-    except FileNotFoundError:
-        DYNAMIC_ADMINS = set()
-    except Exception as e:
-        print("Error loading admins:", e)
-        DYNAMIC_ADMINS = set()
-
+    data = _safe_load(ADMINS_FILE, [])
+    DYNAMIC_ADMINS = set(int(x) for x in data)
     if OWNER_ID:
         try:
             DYNAMIC_ADMINS.add(int(OWNER_ID))
             print(f"👑 OWNER_ID {OWNER_ID} auto-added as admin.")
         except ValueError:
-            print(f"⚠️ OWNER_ID is not numeric: {OWNER_ID}")
-
+            print(f"⚠️ OWNER_ID not numeric: {OWNER_ID}")
     save_admins()
+    print(f"✅ Loaded {len(DYNAMIC_ADMINS)} admins.")
 
 def save_admins():
-    try:
-        with open(ADMINS_FILE, "w", encoding="utf-8") as f:
-            json.dump(sorted(list(DYNAMIC_ADMINS)), f, indent=2)
-    except Exception as e:
-        print("Could not save admins:", e)
+    _safe_save(ADMINS_FILE, sorted(list(DYNAMIC_ADMINS)))
+
+def load_banned():
+    global BANNED_USERS
+    raw = _safe_load(BANNED_FILE, {})
+    BANNED_USERS = {int(k): v for k, v in raw.items()}
+    print(f"🚫 Loaded {len(BANNED_USERS)} banned users.")
+
+def save_banned():
+    _safe_save(BANNED_FILE, {str(k): v for k, v in BANNED_USERS.items()})
+
+def load_notes():
+    global USER_NOTES
+    raw = _safe_load(NOTES_FILE, {})
+    USER_NOTES = {int(k): v for k, v in raw.items()}
+    print(f"📝 Loaded notes for {len(USER_NOTES)} users.")
+
+def save_notes():
+    _safe_save(NOTES_FILE, {str(k): v for k, v in USER_NOTES.items()})
+
+def load_log():
+    global ADMIN_LOG
+    ADMIN_LOG = _safe_load(ADMIN_LOG_FILE, [])
+    if not isinstance(ADMIN_LOG, list):
+        ADMIN_LOG = []
+
+def save_log():
+    _safe_save(ADMIN_LOG_FILE, ADMIN_LOG[-ADMIN_LOG_MAX:])
+
+def load_lastseen():
+    global LAST_SEEN
+    raw = _safe_load(LASTSEEN_FILE, {})
+    LAST_SEEN = {int(k): float(v) for k, v in raw.items()}
+
+def save_lastseen():
+    _safe_save(LASTSEEN_FILE, {str(k): v for k, v in LAST_SEEN.items()})
+
+def log_admin(by, action, target=""):
+    entry = {"ts": int(time.time()), "by": int(by), "action": str(action), "target": str(target)}
+    ADMIN_LOG.append(entry)
+    if len(ADMIN_LOG) > ADMIN_LOG_MAX:
+        del ADMIN_LOG[:-ADMIN_LOG_MAX]
+    save_log()
 
 # ==========================================
-# IMAGE CONFIGURATION
+# ROLES
+# ==========================================
+def is_owner(chat_id):
+    return bool(OWNER_ID) and str(chat_id) == OWNER_ID
+
+def is_admin(chat_id):
+    return chat_id in DYNAMIC_ADMINS
+
+def get_role(chat_id):
+    if is_owner(chat_id): return "owner"
+    if is_admin(chat_id): return "admin"
+    return "user"
+
+def role_badge(chat_id):
+    r = get_role(chat_id)
+    return {"owner": "👑 Owner", "admin": "🛡 Admin", "user": "👤 User"}[r]
+
+def is_banned(chat_id):
+    return chat_id in BANNED_USERS
+
+# ==========================================
+# IMAGES
 # ==========================================
 WELCOME_IMG = os.getenv("WELCOME_IMG", r"images\welcome.png")
-OSINT_IMG = os.getenv("OSINT_IMG", r"images\osint.png")
+OSINT_IMG   = os.getenv("OSINT_IMG",   r"images\osint.png")
 PAYMENT_IMG = os.getenv("PAYMENT_IMG", r"images\payment.png")
-
 IMAGE_CACHE = {}
 
 def cache_image(path):
     if not os.path.exists(path):
-        print(f"⚠️ Warning: Image not found at {path}")
+        print(f"⚠️ Image not found: {path}")
         return
     try:
         with Image.open(path) as img:
             if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
-                background = Image.new("RGB", img.size, (255, 255, 255))
-                background.paste(img, mask=img.split()[-1])
-                img = background
+                bg = Image.new("RGB", img.size, (255, 255, 255))
+                bg.paste(img, mask=img.split()[-1])
+                img = bg
             elif img.mode != "RGB":
                 img = img.convert("RGB")
             img.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
             buf = BytesIO()
             img.save(buf, format="JPEG", quality=85, optimize=True)
             IMAGE_CACHE[path] = buf.getvalue()
-            size_kb = len(IMAGE_CACHE[path]) / 1024
-            print(f"✅ Cached & compressed: {path} ({size_kb:.1f} KB)")
+            print(f"✅ Cached: {path} ({len(IMAGE_CACHE[path])/1024:.1f} KB)")
     except Exception as e:
-        print(f"❌ Failed to compress image {path}: {e}")
+        print(f"❌ Compress fail {path}: {e}")
         try:
             with open(path, "rb") as f:
                 IMAGE_CACHE[path] = f.read()
-            print(f"⚠️ Loaded raw image instead: {path}")
         except Exception as raw_e:
-            print(f"❌ Failed to load raw image {path}: {raw_e}")
+            print(f"❌ Raw load fail {path}: {raw_e}")
 
 cache_image(WELCOME_IMG)
 cache_image(OSINT_IMG)
 cache_image(PAYMENT_IMG)
 
+# ==========================================
+# PLANS
+# ==========================================
 PLANS = {
     "plan_1": {"name": "1 Month",  "price_usd": 13.00, "days": 30},
     "plan_2": {"name": "3 Months", "price_usd": 18.00, "days": 90},
@@ -199,7 +269,6 @@ db_lock = threading.Lock()
 
 MIN_AMOUNT_CACHE = {}
 MIN_AMOUNT_CACHE_TTL = 600
-
 CURRENCY_CACHE = {"list": [], "ts": 0}
 CURRENCY_CACHE_TTL = 3600
 CURRENCY_PAGE_SIZE = 20
@@ -308,6 +377,16 @@ TEXTS = {
         "plan_3": "6 Months", "plan_4": "1 Year",
         "bumped_note": "ℹ️ Amount adjusted to meet the network minimum.",
         "currency_unsupported": "⚠️ This currency may not be supported for payments. Please try another.",
+        "maintenance": ("🛠 <b>UNDER MAINTENANCE</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                        "The bot is temporarily unavailable.\nPlease try again later."),
+        "banned_msg": ("🚫 <b>ACCESS BLOCKED</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                       "Your account has been suspended.\nContact support if you believe this is a mistake."),
+        "admin_granted": ("🎁 <b>PLAN ACTIVATED</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                          "An admin has activated your plan.\n"
+                          "📦 Plan: <b>{plan}</b>\n"
+                          "➕ Days added: <b>{days}</b>\n"
+                          "⏳ New expiry: <code>{expiry}</code>\n\n"
+                          "Enjoy full access!"),
     },
     "hi": {
         "welcome": ("✨ <b>स्वागत है</b> ✨\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -363,6 +442,16 @@ TEXTS = {
         "plan_3": "6 महीने", "plan_4": "1 वर्ष",
         "bumped_note": "ℹ️ नेटवर्क न्यूनतम के अनुसार राशि समायोजित की गई।",
         "currency_unsupported": "⚠️ यह मुद्रा भुगतान के लिए समर्थित नहीं हो सकती।",
+        "maintenance": ("🛠 <b>रखरखाव जारी</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                        "बॉट अस्थायी रूप से अनुपलब्ध है।\nकृपया बाद में पुनः प्रयास करें।"),
+        "banned_msg": ("🚫 <b>पहुँच अवरुद्ध</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                       "आपका खाता निलंबित कर दिया गया है।"),
+        "admin_granted": ("🎁 <b>प्लान सक्रिय किया गया</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                          "एडमिन ने आपका प्लान सक्रिय कर दिया है।\n"
+                          "📦 प्लान: <b>{plan}</b>\n"
+                          "➕ दिन जोड़े: <b>{days}</b>\n"
+                          "⏳ नई समाप्ति: <code>{expiry}</code>\n\n"
+                          "पूर्ण पहुँच का आनंद लें!"),
     },
 }
 
@@ -393,7 +482,7 @@ def is_button(text, key, lang):
     return normalize_text(text) in candidates
 
 # ============================================================
-# API CONFIGURATION
+# API CONFIG
 # ============================================================
 API_CONFIG = {
     "🪪 Aadhaar Info ": {"url": "https://travelers-creature-sarah-rogers.trycloudflare.com/search?q=", "prompt": "🪪 Send a 12 Digit Aadhaar Number to Get🪪 information 💀"},
@@ -428,9 +517,7 @@ API_CONNECT_TIMEOUT = 3
 API_READ_TIMEOUT = 15
 
 USER_TELEGRAM_API = "https://api.telegram.org/bot" + USER_BOT_TOKEN
-ADMIN_TELEGRAM_APIS = {
-    1: "https://api.telegram.org/bot" + ADMIN_BOT_TOKEN_1,
-}
+ADMIN_TELEGRAM_APIS = {1: "https://api.telegram.org/bot" + ADMIN_BOT_TOKEN_1}
 
 # ============================================================
 # STATE
@@ -445,32 +532,14 @@ ADMIN_STATE = {}
 # ============================================================
 def load_activation_data():
     global ACTIVATED_USERS, USER_LANGS
-    try:
-        with open(DB_FILE, "r", encoding="utf-8") as file:
-            data = json.load(file)
-        raw_users = data.get("activated_users", {})
-        ACTIVATED_USERS = {int(k): float(v) for k, v in raw_users.items()}
-        raw_langs = data.get("user_langs", {})
-        USER_LANGS = {int(k): str(v) for k, v in raw_langs.items()}
-    except FileNotFoundError:
-        ACTIVATED_USERS = {}
-        USER_LANGS = {}
-    except Exception as error:
-        print("Could not load activation database:", error)
+    data = _safe_load(DB_FILE, {})
+    ACTIVATED_USERS = {int(k): float(v) for k, v in data.get("activated_users", {}).items()}
+    USER_LANGS = {int(k): str(v) for k, v in data.get("user_langs", {}).items()}
 
 def save_activation_data():
     with db_lock:
-        data = {
-            "activated_users": ACTIVATED_USERS,
-            "user_langs": USER_LANGS,
-        }
-        temp_file = DB_FILE + ".tmp"
-        try:
-            with open(temp_file, "w", encoding="utf-8") as file:
-                json.dump(data, file, indent=2, ensure_ascii=False)
-            os.replace(temp_file, DB_FILE)
-        except Exception as error:
-            print("Could not save activation database:", error)
+        data = {"activated_users": ACTIVATED_USERS, "user_langs": USER_LANGS}
+        _safe_save(DB_FILE, data)
 
 def get_lang(chat_id):
     return USER_LANGS.get(chat_id, "en")
@@ -490,24 +559,22 @@ def send_message(chat_id, text, keyboard=None, parse_mode="HTML"):
     if keyboard is not None:
         data["reply_markup"] = json.dumps(keyboard, ensure_ascii=False)
     try:
-        response = HTTP.post(url, data=data, timeout=(TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT))
-        response.raise_for_status()
-        return response.json()
+        r = HTTP.post(url, data=data, timeout=(TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT))
+        r.raise_for_status()
+        return r.json()
     except requests.exceptions.HTTPError as e:
         if e.response is not None and e.response.status_code == 400 and "parse" in e.response.text.lower():
-            print("HTML parse failed, retrying as plain text...")
             data.pop("parse_mode", None)
             try:
-                response = HTTP.post(url, data=data, timeout=(TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT))
-                response.raise_for_status()
-                return response.json()
+                r = HTTP.post(url, data=data, timeout=(TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT))
+                r.raise_for_status()
+                return r.json()
             except Exception as inner:
-                print("Plain text retry failed:", inner)
-                return None
-        print("Telegram error:", e)
+                print("Plain retry fail:", inner)
+        print("sendMessage err:", e)
         return None
-    except Exception as error:
-        print("Telegram error:", error)
+    except Exception as e:
+        print("sendMessage err:", e)
         return None
 
 def send_photo(chat_id, photo, caption=None, keyboard=None, parse_mode="HTML"):
@@ -529,49 +596,35 @@ def send_photo(chat_id, photo, caption=None, keyboard=None, parse_mode="HTML"):
                 mime = "image/png" if photo.lower().endswith(".png") else "image/jpeg"
                 files = {"photo": (os.path.basename(photo), f.read(), mime)}
         except Exception as e:
-            print(f"Error reading local image {photo}: {e}")
+            print(f"read img err {photo}: {e}")
     elif isinstance(photo, str):
         data["photo"] = photo
     else:
         files = {"photo": ("qr.png", photo, "image/png")}
 
     if files is None and isinstance(photo, str) and (photo.endswith(".png") or photo.endswith(".jpg") or photo.endswith(".jpeg")):
-        print(f"⚠️ Cannot send image '{photo}'. Falling back to text message.")
         if caption:
             return send_message(chat_id, caption, keyboard, parse_mode)
         return None
 
     try:
-        response = HTTP.post(url, data=data, files=files, timeout=(TELEGRAM_CONNECT_TIMEOUT, 60))
-        response.raise_for_status()
-        return response.json()
+        r = HTTP.post(url, data=data, files=files, timeout=(TELEGRAM_CONNECT_TIMEOUT, 60))
+        r.raise_for_status()
+        return r.json()
     except requests.exceptions.Timeout:
-        print("⚠️ Telegram sendPhoto timed out. Falling back to text.")
         if caption:
             send_message(chat_id, caption, keyboard, parse_mode)
         return None
     except requests.exceptions.HTTPError as e:
-        print(f"Telegram sendPhoto HTTP Error: {e.response.status_code} - {e.response.text}")
+        print(f"sendPhoto HTTP {e.response.status_code}")
         if caption:
             send_message(chat_id, caption, keyboard, parse_mode)
         return None
-    except Exception as error:
-        print("Telegram sendPhoto general error:", error)
-        if caption:
-            send_message(chat_id, caption, keyboard, parse_mode)
-        return None
-
-def edit_photo_caption(chat_id, message_id, caption, keyboard=None, parse_mode="HTML"):
-    url = USER_TELEGRAM_API + "/editMessageCaption"
-    data = {"chat_id": chat_id, "message_id": message_id, "caption": caption}
-    if parse_mode:
-        data["parse_mode"] = parse_mode
-    if keyboard is not None:
-        data["reply_markup"] = json.dumps(keyboard, ensure_ascii=False)
-    try:
-        HTTP.post(url, data=data, timeout=(5, 15))
     except Exception as e:
-        print("editMessageCaption error:", e)
+        print("sendPhoto err:", e)
+        if caption:
+            send_message(chat_id, caption, keyboard, parse_mode)
+        return None
 
 def get_updates(offset=None):
     url = USER_TELEGRAM_API + "/getUpdates"
@@ -579,11 +632,11 @@ def get_updates(offset=None):
     if offset is not None:
         params["offset"] = offset
     try:
-        response = HTTP.get(url, params=params, timeout=(TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT))
-        response.raise_for_status()
-        return response.json()
-    except Exception as error:
-        print("getUpdates error:", error)
+        r = HTTP.get(url, params=params, timeout=(TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT))
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        print("getUpdates err:", e)
         return None
 
 def answer_callback(callback_id, text=None):
@@ -594,64 +647,42 @@ def answer_callback(callback_id, text=None):
     try:
         HTTP.post(url, data=data, timeout=(5, 10))
     except Exception as e:
-        print("answerCallbackQuery error:", e)
+        print("answerCB err:", e)
 
 def delete_message(chat_id, message_id):
     url = USER_TELEGRAM_API + "/deleteMessage"
     try:
         HTTP.post(url, data={"chat_id": chat_id, "message_id": message_id}, timeout=(5, 10))
     except Exception as e:
-        print("deleteMessage error:", e)
+        print("delMsg err:", e)
 
 # ============================================================
-# QR + HELPERS
+# QR / HELPERS
 # ============================================================
 def generate_qr_bytes(data):
-    qr = qrcode.QRCode(
-        version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_H,
-        box_size=10,
-        border=3,
-    )
-    qr.add_data(data)
-    qr.make(fit=True)
+    qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_H, box_size=10, border=3)
+    qr.add_data(data); qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white")
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
+    buf = BytesIO(); img.save(buf, format="PNG"); buf.seek(0)
     return buf.getvalue()
 
 def copy_address_keyboard(address):
-    return {
-        "inline_keyboard": [
-            [{"text": "📋 Copy Address", "copy_text": {"text": address}}]
-        ]
-    }
+    return {"inline_keyboard": [[{"text": "📋 Copy Address", "copy_text": {"text": address}}]]}
 
 def build_payment_uri(currency, address, amount=None):
     currency = (currency or "").lower()
     if currency == "btc":
-        uri = f"bitcoin:{address}"
-        if amount:
-            uri += f"?amount={amount}"
-        return uri
-    if currency == "eth":
-        return f"ethereum:{address}"
+        return f"bitcoin:{address}" + (f"?amount={amount}" if amount else "")
+    if currency == "eth":  return f"ethereum:{address}"
     if currency == "ltc":
-        uri = f"litecoin:{address}"
-        if amount:
-            uri += f"?amount={amount}"
-        return uri
-    if currency == "trx":
-        return f"tron:{address}"
+        return f"litecoin:{address}" + (f"?amount={amount}" if amount else "")
+    if currency == "trx":  return f"tron:{address}"
     return address
 
 def prettify_currency(raw):
     raw = (raw or "").upper()
-    if raw == "USDTTRC20":
-        return "USDT (TRC20)"
-    if raw == "USDTERC20":
-        return "USDT (ERC20)"
+    if raw == "USDTTRC20": return "USDT (TRC20)"
+    if raw == "USDTERC20": return "USDT (ERC20)"
     return raw
 
 # ============================================================
@@ -661,27 +692,18 @@ def fetch_all_currencies():
     now = time.time()
     if CURRENCY_CACHE["list"] and (now - CURRENCY_CACHE["ts"]) < CURRENCY_CACHE_TTL:
         return CURRENCY_CACHE["list"]
-
-    merged = {}
-    for code, name in FIAT_FALLBACK:
-        merged[code] = {"code": code, "name": name}
-
+    merged = {code: {"code": code, "name": name} for code, name in FIAT_FALLBACK}
     try:
-        headers = {"x-api-key": NOWPAYMENTS_API_KEY}
-        r = HTTP.get(
-            NOWPAYMENTS_API_URL + "/currencies",
-            headers=headers,
-            timeout=(API_CONNECT_TIMEOUT, API_READ_TIMEOUT)
-        )
+        r = HTTP.get(NOWPAYMENTS_API_URL + "/currencies",
+                     headers={"x-api-key": NOWPAYMENTS_API_KEY},
+                     timeout=(API_CONNECT_TIMEOUT, API_READ_TIMEOUT))
         if r.status_code == 200:
-            data = r.json()
-            for code in data.get("currencies", []):
-                code_l = code.lower()
-                if code_l not in merged:
-                    merged[code_l] = {"code": code_l, "name": code_l.upper()}
+            for code in r.json().get("currencies", []):
+                cl = code.lower()
+                if cl not in merged:
+                    merged[cl] = {"code": cl, "name": cl.upper()}
     except Exception as e:
-        print("fetch_all_currencies error:", e)
-
+        print("currencies err:", e)
     lst = sorted(merged.values(), key=lambda c: c["code"])
     CURRENCY_CACHE["list"] = lst
     CURRENCY_CACHE["ts"] = now
@@ -689,19 +711,14 @@ def fetch_all_currencies():
 
 def find_currencies(query, limit=10):
     q = normalize_text(query)
-    if not q:
-        return []
+    if not q: return []
     lst = fetch_all_currencies()
     exact, starts, contains = [], [], []
     for c in lst:
-        code_l = c["code"].lower()
-        name_l = c["name"].lower()
-        if code_l == q or name_l == q:
-            exact.append(c)
-        elif code_l.startswith(q) or name_l.startswith(q):
-            starts.append(c)
-        elif q in code_l or q in name_l:
-            contains.append(c)
+        cl, nl = c["code"].lower(), c["name"].lower()
+        if cl == q or nl == q: exact.append(c)
+        elif cl.startswith(q) or nl.startswith(q): starts.append(c)
+        elif q in cl or q in nl: contains.append(c)
     return (exact + starts + contains)[:limit]
 
 # ============================================================
@@ -709,22 +726,15 @@ def find_currencies(query, limit=10):
 # ============================================================
 def get_min_amount(crypto_currency, fiat="usd"):
     try:
-        params = {
-            "currency_from": crypto_currency,
-            "currency_to": fiat,
-            "fiat_equivalent": fiat,
-        }
-        headers = {"x-api-key": NOWPAYMENTS_API_KEY}
-        response = HTTP.get(
-            NOWPAYMENTS_API_URL + "/min-amount",
-            params=params, headers=headers,
-            timeout=(API_CONNECT_TIMEOUT, API_READ_TIMEOUT),
-        )
-        response.raise_for_status()
-        data = response.json()
-        return data.get("min_amount"), data.get("fiat_equivalent")
+        r = HTTP.get(NOWPAYMENTS_API_URL + "/min-amount",
+                     params={"currency_from": crypto_currency, "currency_to": fiat, "fiat_equivalent": fiat},
+                     headers={"x-api-key": NOWPAYMENTS_API_KEY},
+                     timeout=(API_CONNECT_TIMEOUT, API_READ_TIMEOUT))
+        r.raise_for_status()
+        d = r.json()
+        return d.get("min_amount"), d.get("fiat_equivalent")
     except Exception as e:
-        print(f"min-amount error for {crypto_currency}: {e}")
+        print(f"min-amount {crypto_currency}: {e}")
         return None, None
 
 def get_min_amount_cached(crypto_currency, fiat="usd"):
@@ -738,57 +748,36 @@ def get_min_amount_cached(crypto_currency, fiat="usd"):
     return mn, mf
 
 # ============================================================
-# KEYBOARDS
+# USER KEYBOARDS
 # ============================================================
 def payment_inline_keyboard(lang="en"):
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "1 Month - $13.00", "callback_data": "select_plan:plan_1"},
-                {"text": "3 Months - $18.00", "callback_data": "select_plan:plan_2"}
-            ],
-            [
-                {"text": "6 Months - $25.00", "callback_data": "select_plan:plan_3"},
-                {"text": "1 Year - $35.00", "callback_data": "select_plan:plan_4"}
-            ],
-            [
-                {"text": t(lang, "check_status_btn"), "callback_data": "user:check_status"},
-                {"text": t(lang, "cancel_btn"), "callback_data": "user:cancel"}
-            ],
-            [
-                {"text": t(lang, "lang_btn"), "callback_data": "user:lang"}
-            ]
-        ]
-    }
+    return {"inline_keyboard": [
+        [{"text": "1 Month - $13.00", "callback_data": "select_plan:plan_1"},
+         {"text": "3 Months - $18.00", "callback_data": "select_plan:plan_2"}],
+        [{"text": "6 Months - $25.00", "callback_data": "select_plan:plan_3"},
+         {"text": "1 Year - $35.00", "callback_data": "select_plan:plan_4"}],
+        [{"text": t(lang, "check_status_btn"), "callback_data": "user:check_status"},
+         {"text": t(lang, "cancel_btn"), "callback_data": "user:cancel"}],
+        [{"text": t(lang, "lang_btn"), "callback_data": "user:lang"}],
+    ]}
 
 def main_keyboard(lang="en"):
     buttons = list(API_CONFIG.keys())
-    keyboard = []
-    for i in range(0, len(buttons), 2):
-        keyboard.append(buttons[i:i + 2])
+    keyboard = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
     keyboard.append([t(lang, "deactivate_btn"), t(lang, "cancel_btn")])
     keyboard.append([t(lang, "lang_btn")])
-    return {
-        "keyboard": keyboard,
-        "resize_keyboard": True,
-        "one_time_keyboard": False,
-    }
+    return {"keyboard": keyboard, "resize_keyboard": True, "one_time_keyboard": False}
 
 def language_keyboard():
     items = list(LANGUAGES.items())
     rows = []
     for i in range(0, len(items), 2):
-        row = []
-        for code, name in items[i:i + 2]:
-            row.append({"text": name, "callback_data": f"lang:{code}"})
+        row = [{"text": name, "callback_data": f"lang:{code}"} for code, name in items[i:i+2]]
         rows.append(row)
     return {"inline_keyboard": rows}
 
 def currency_inline_keyboard(results):
-    rows = []
-    for c in results:
-        label = f"{c['code'].upper()} — {c['name']}"
-        rows.append([{"text": label, "callback_data": f"cur:{c['code']}"}])
+    rows = [[{"text": f"{c['code'].upper()} — {c['name']}", "callback_data": f"cur:{c['code']}"}] for c in results]
     rows.append([{"text": "❌ Cancel", "callback_data": "cur:cancel"}])
     return {"inline_keyboard": rows}
 
@@ -798,81 +787,77 @@ def popular_currency_keyboard(plan_id, lang="en"):
         row.append({"text": code.upper(), "callback_data": f"plan:{plan_id}:{code}"})
         if len(row) == 3:
             rows.append(row); row = []
-    if row:
-        rows.append(row)
-    rows.append([
-        {"text": t(lang, "search_currency"), "callback_data": f"search:{plan_id}"},
-        {"text": t(lang, "back"), "callback_data": "back:plans"},
-    ])
+    if row: rows.append(row)
+    rows.append([{"text": t(lang, "search_currency"), "callback_data": f"search:{plan_id}"},
+                 {"text": t(lang, "back"), "callback_data": "back:plans"}])
     return {"inline_keyboard": rows}
 
 # ============================================================
 # ADMIN KEYBOARDS
 # ============================================================
 def admin_main_keyboard():
-    return {
-        "inline_keyboard": [
-            [{"text": "👥 User List", "callback_data": "admin:list"}, {"text": "📊 Stats", "callback_data": "admin:stats"}],
-            [{"text": "📁 View DB", "callback_data": "admin:db"}],
-            [{"text": "👑 Admins", "callback_data": "admin:admins"}],
-            [{"text": "📢 Broadcast", "callback_data": "admin:broadcast"}],
-            [{"text": "🧹 Remove All", "callback_data": "admin:remove_all"}],
-        ]
-    }
+    return {"inline_keyboard": [
+        [{"text": "👥 Users",       "callback_data": "admin:list"},
+         {"text": "📊 Stats",       "callback_data": "admin:stats"}],
+        [{"text": "🎁 Activate User", "callback_data": "admin:activate_help"},
+         {"text": "❌ Revoke",       "callback_data": "admin:revoke_help"}],
+        [{"text": "🚫 Banned",      "callback_data": "admin:banned"},
+         {"text": "🟢 Online",      "callback_data": "admin:online"}],
+        [{"text": "👑 Admins",      "callback_data": "admin:admins"},
+         {"text": "📜 Logs",        "callback_data": "admin:logs"}],
+        [{"text": "💰 Revenue",     "callback_data": "admin:revenue"},
+         {"text": "📁 View DB",     "callback_data": "admin:db"}],
+        [{"text": "📢 Broadcast",   "callback_data": "admin:broadcast"},
+         {"text": "🧹 Remove All",  "callback_data": "admin:remove_all"}],
+        [{"text": "🛠 Maintenance", "callback_data": "admin:maintenance"},
+         {"text": "🆔 Who Am I",    "callback_data": "admin:whoami"}],
+    ]}
 
 def admin_admins_keyboard():
-    return {
-        "inline_keyboard": [
-            [{"text": "➕ Add Admin", "callback_data": "admin:add_admin"}],
-            [{"text": "➖ Remove Admin", "callback_data": "admin:remove_admin"}],
-            [{"text": "📋 List Admins", "callback_data": "admin:list_admins"}],
-            [{"text": "🔙 Back to Panel", "callback_data": "admin:back"}],
-        ]
-    }
+    return {"inline_keyboard": [
+        [{"text": "➕ Add Admin",    "callback_data": "admin:add_admin"}],
+        [{"text": "➖ Remove Admin", "callback_data": "admin:remove_admin"}],
+        [{"text": "📋 List Admins",  "callback_data": "admin:list_admins"}],
+        [{"text": "🔙 Back",         "callback_data": "admin:back"}],
+    ]}
+
+def admin_plan_picker_keyboard(target_uid, mode="set"):
+    rows = []
+    for pid, p in PLANS.items():
+        label = f"{p['name']} · {p['days']}d · ${p['price_usd']:.0f}"
+        rows.append([{"text": label, "callback_data": f"admin:do_activate:{target_uid}:{pid}:{mode}"}])
+    rows.append([
+        {"text": "✏️ Custom days", "callback_data": f"admin:custom_activate:{target_uid}:{mode}"},
+        {"text": "❌ Cancel",      "callback_data": "admin:back"},
+    ])
+    return {"inline_keyboard": rows}
 
 # ============================================================
 # NOWPAYMENTS PAYMENT CREATION
 # ============================================================
 def create_nowpayments_payment(chat_id, plan_id, pay_currency, charge_usd=None):
     plan = PLANS.get(plan_id)
-    if not plan:
-        return {"error": "unknown_plan"}
-
-    if charge_usd is None:
-        charge_usd = float(plan["price_usd"])
-
+    if not plan: return {"error": "unknown_plan"}
+    if charge_usd is None: charge_usd = float(plan["price_usd"])
     order_id = f"tg_{chat_id}_{plan['days']}_{int(time.time())}"
-
     payload = {
-        "price_amount": charge_usd,
-        "price_currency": "usd",
-        "pay_currency": pay_currency,
-        "order_id": order_id,
+        "price_amount": charge_usd, "price_currency": "usd",
+        "pay_currency": pay_currency, "order_id": order_id,
         "order_description": f"Bot Activation - {plan['name']} - {chat_id}",
     }
     if IPN_CALLBACK_URL and IPN_CALLBACK_URL.startswith("http") and "your-app" not in IPN_CALLBACK_URL:
         payload["ipn_callback_url"] = IPN_CALLBACK_URL
-
     headers = {"x-api-key": NOWPAYMENTS_API_KEY, "Content-Type": "application/json"}
-
     try:
-        response = HTTP.post(
-            NOWPAYMENTS_API_URL + "/payment",
-            json=payload, headers=headers,
-            timeout=(API_CONNECT_TIMEOUT, API_READ_TIMEOUT),
-        )
-        try:
-            body = response.json()
-        except Exception:
-            return {"error": "api_error", "status": response.status_code,
-                    "message": response.text[:500]}
-
-        if response.status_code not in (200, 201):
-            return {"error": "api_error", "status": response.status_code,
+        r = HTTP.post(NOWPAYMENTS_API_URL + "/payment", json=payload, headers=headers,
+                      timeout=(API_CONNECT_TIMEOUT, API_READ_TIMEOUT))
+        try: body = r.json()
+        except Exception: return {"error": "api_error", "status": r.status_code, "message": r.text[:500]}
+        if r.status_code not in (200, 201):
+            return {"error": "api_error", "status": r.status_code,
                     "message": body.get("message") or body.get("error") or str(body)}
         if not body.get("pay_address"):
-            return {"error": "api_error", "status": response.status_code,
-                    "message": body.get("message") or "No pay_address in response"}
+            return {"error": "api_error", "status": r.status_code, "message": body.get("message") or "No pay_address"}
         return body
     except requests.exceptions.Timeout:
         return {"error": "timeout"}
@@ -888,14 +873,11 @@ def verify_nowpayments_ipn(request_body, received_signature):
     try:
         body = request_body if isinstance(request_body, dict) else json.loads(request_body)
         sorted_body = json.dumps(body, sort_keys=True, separators=(",", ":"))
-        expected = hmac.new(
-            NOWPAYMENTS_IPN_SECRET.encode("utf-8"),
-            sorted_body.encode("utf-8"),
-            hashlib.sha512,
-        ).hexdigest()
+        expected = hmac.new(NOWPAYMENTS_IPN_SECRET.encode("utf-8"),
+                            sorted_body.encode("utf-8"), hashlib.sha512).hexdigest()
         return hmac.compare_digest(expected, received_signature)
     except Exception as e:
-        print("IPN Verification Error:", e)
+        print("IPN verify err:", e)
         return False
 
 @app.route("/nowpayments_webhook", methods=["POST"])
@@ -904,7 +886,6 @@ def nowpayments_webhook():
     sig = request.headers.get("x-nowpayments-sig")
     if not sig or not verify_nowpayments_ipn(raw_body, sig):
         return jsonify({"status": "invalid signature"}), 400
-
     try:
         data = json.loads(raw_body)
         status = data.get("payment_status")
@@ -912,27 +893,22 @@ def nowpayments_webhook():
         if status in ("finished", "confirmed") and order_id:
             parts = order_id.split("_")
             if len(parts) >= 4 and parts[0] == "tg":
-                user_id = int(parts[1])
-                days = int(parts[2])
+                user_id = int(parts[1]); days = int(parts[2])
                 current = ACTIVATED_USERS.get(user_id, 0)
-                if current < time.time():
-                    current = time.time()
+                if current < time.time(): current = time.time()
                 new_expiry = current + (days * 86400)
                 ACTIVATED_USERS[user_id] = new_expiry
                 save_activation_data()
                 lang = get_lang(user_id)
                 expiry_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(new_expiry))
-                send_message(
-                    user_id,
+                send_message(user_id,
                     f"{t(lang, 'payment_confirmed')}\n\n"
                     f"{t(lang, 'activated_days', days=days)}\n"
                     f"{t(lang, 'expiry')}: <code>{expiry_str}</code>\n\n"
                     f"{t(lang, 'select_feature')}",
-                    main_keyboard(lang),
-                )
+                    main_keyboard(lang))
     except Exception as e:
-        print("Error processing webhook:", e)
-
+        print("webhook err:", e)
     return jsonify({"status": "ok"}), 200
 
 # ============================================================
@@ -942,70 +918,75 @@ def is_active(chat_id):
     exp = ACTIVATED_USERS.get(chat_id)
     return bool(exp and exp > time.time())
 
+def grant_plan(target_uid, days, mode="set"):
+    now = time.time()
+    prev = ACTIVATED_USERS.get(target_uid, 0)
+    if mode == "extend":
+        base = prev if prev > now else now
+        new_expiry = base + days * 86400
+        added = days
+    else:
+        new_expiry = now + days * 86400
+        added = days
+    ACTIVATED_USERS[target_uid] = new_expiry
+    save_activation_data()
+    return new_expiry, added, prev
+
+def notify_user_activated(target_uid, plan_label, days, new_expiry):
+    lang = get_lang(target_uid)
+    expiry_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(new_expiry))
+    try:
+        send_message(target_uid,
+            t(lang, "admin_granted", plan=plan_label, days=days, expiry=expiry_str),
+            main_keyboard(lang))
+        return True
+    except Exception as e:
+        print("notify_user_activated err:", e)
+        return False
+
 def create_payment_and_send(chat_id, plan_id, pay_currency):
     lang = get_lang(chat_id)
     plan = PLANS.get(plan_id)
     if not plan:
-        send_message(chat_id, "Unknown plan.", payment_inline_keyboard(lang))
-        return
-
+        send_message(chat_id, "Unknown plan.", payment_inline_keyboard(lang)); return
     send_message(chat_id, t(lang, "generating"))
-
     charge_usd = float(plan["price_usd"])
     mn, mf = get_min_amount_cached(pay_currency, "usd")
     if mf is not None and charge_usd < float(mf):
         charge_usd = round(float(mf) * 1.05, 2)
-
     payment = create_nowpayments_payment(chat_id, plan_id, pay_currency, charge_usd=charge_usd)
-
     if payment and payment.get("error"):
-        err = payment.get("error")
-        msg_text = payment.get("message", "")
+        err = payment.get("error"); msg_text = payment.get("message", "")
         if err == "timeout":
-            send_photo(chat_id, PAYMENT_IMG, caption=t(lang, "payment_timeout"), keyboard=payment_inline_keyboard(lang))
+            send_photo(chat_id, PAYMENT_IMG, caption=t(lang, "payment_timeout"),
+                       keyboard=payment_inline_keyboard(lang))
         else:
-            send_photo(
-                chat_id, PAYMENT_IMG,
+            send_photo(chat_id, PAYMENT_IMG,
                 caption=f"{t(lang, 'payment_api_error')}\n\n<code>{err}: {msg_text[:400]}</code>\n\n{t(lang, 'try_again')}",
-                keyboard=payment_inline_keyboard(lang),
-            )
+                keyboard=payment_inline_keyboard(lang))
         return
-
     if not payment or not payment.get("pay_address"):
-        send_photo(chat_id, PAYMENT_IMG, caption=t(lang, "try_again"), keyboard=payment_inline_keyboard(lang))
-        return
-
+        send_photo(chat_id, PAYMENT_IMG, caption=t(lang, "try_again"),
+                   keyboard=payment_inline_keyboard(lang)); return
     pay_address = payment["pay_address"]
     pay_amount = payment.get("pay_amount")
     pay_curr = prettify_currency(payment.get("pay_currency") or pay_currency)
-
     try:
-        qr_data = build_payment_uri(
-            pay_currency, pay_address,
-            amount=pay_amount if pay_currency in ("btc", "ltc") else None,
-        )
-        qr_bytes = generate_qr_bytes(qr_data)
-        send_photo(
-            chat_id, qr_bytes,
-            caption=(
-                f"🪙 <b>{pay_curr} Payment Invoice</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"📷 <b>Scan the QR</b> or copy the address below."
-            ),
-            keyboard=copy_address_keyboard(pay_address),
-        )
+        qr_data = build_payment_uri(pay_currency, pay_address,
+                                    amount=pay_amount if pay_currency in ("btc","ltc") else None)
+        send_photo(chat_id, generate_qr_bytes(qr_data),
+            caption=(f"🪙 <b>{pay_curr} Payment Invoice</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                     f"📷 <b>Scan the QR</b> or copy the address below."),
+            keyboard=copy_address_keyboard(pay_address))
     except Exception as e:
-        print("QR error:", e)
-
-    send_message(
-        chat_id,
-        t(lang, "send_amount", amount=pay_amount, currency=pay_curr)
-        + f"\n<code>{pay_address}</code>",
-        copy_address_keyboard(pay_address),
-    )
+        print("QR err:", e)
+    send_message(chat_id,
+        t(lang, "send_amount", amount=pay_amount, currency=pay_curr) +
+        f"\n<code>{pay_address}</code>",
+        copy_address_keyboard(pay_address))
 
 # ============================================================
-# CALLBACK HANDLER (USER BOT)
+# USER CALLBACK HANDLER
 # ============================================================
 def process_callback(cb):
     data = cb.get("data", "") or ""
@@ -1013,17 +994,20 @@ def process_callback(cb):
     chat_id = (msg.get("chat") or {}).get("id")
     msg_id = msg.get("message_id")
     cb_id = cb.get("id")
-    if chat_id is None:
-        return
+    if chat_id is None: return
     lang = get_lang(chat_id)
+
+    if is_banned(chat_id):
+        answer_callback(cb_id, "🚫 Banned"); return
+    if MAINTENANCE_MODE and get_role(chat_id) == "user":
+        answer_callback(cb_id, "🛠 Maintenance"); return
 
     if data.startswith("lang:"):
         code = data.split(":", 1)[1]
         if code in LANGUAGES:
             set_lang(chat_id, code)
             answer_callback(cb_id, t(code, "language_set"))
-            if msg_id:
-                delete_message(chat_id, msg_id)
+            if msg_id: delete_message(chat_id, msg_id)
             if is_active(chat_id):
                 caption = t(code, "already_active") + "\n\n" + t(code, "select_feature")
                 send_photo(chat_id, OSINT_IMG, caption=caption, keyboard=main_keyboard(code))
@@ -1034,179 +1018,164 @@ def process_callback(cb):
 
     if data == "back:plans":
         answer_callback(cb_id)
-        send_photo(chat_id, PAYMENT_IMG, caption=t(lang, "select_plan"), keyboard=payment_inline_keyboard(lang))
-        return
+        send_photo(chat_id, PAYMENT_IMG, caption=t(lang, "select_plan"),
+                   keyboard=payment_inline_keyboard(lang)); return
 
     if data.startswith("select_plan:"):
         plan_id = data.split(":", 1)[1]
         USER_STATE[chat_id] = {"flow": "select_currency", "plan_id": plan_id}
         answer_callback(cb_id)
-        if msg_id:
-            delete_message(chat_id, msg_id)
-        caption_text = t(lang, "select_currency", plan=t(lang, plan_id), price=f"{PLANS[plan_id]['price_usd']:.2f}") + "\n\n" + t(lang, "popular")
-        send_photo(chat_id, PAYMENT_IMG, caption=caption_text, keyboard=popular_currency_keyboard(plan_id, lang))
-        return
+        if msg_id: delete_message(chat_id, msg_id)
+        caption_text = t(lang, "select_currency", plan=t(lang, plan_id),
+                         price=f"{PLANS[plan_id]['price_usd']:.2f}") + "\n\n" + t(lang, "popular")
+        send_photo(chat_id, PAYMENT_IMG, caption=caption_text,
+                   keyboard=popular_currency_keyboard(plan_id, lang)); return
 
     if data == "user:check_status":
         answer_callback(cb_id)
         if is_active(chat_id):
             expiry_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ACTIVATED_USERS[chat_id]))
-            send_message(
-                chat_id,
-                f"{t(lang, 'status_active')}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+            send_message(chat_id,
+                f"{t(lang, 'status_active')}\n━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"{t(lang, 'expiry')}: <code>{expiry_str}</code>",
-                main_keyboard(lang),
-            )
+                main_keyboard(lang))
         else:
-            send_photo(chat_id, PAYMENT_IMG, caption=f"{t(lang, 'status_inactive')}\n\n{t(lang, 'buy_plan')}", keyboard=payment_inline_keyboard(lang))
+            send_photo(chat_id, PAYMENT_IMG,
+                caption=f"{t(lang, 'status_inactive')}\n\n{t(lang, 'buy_plan')}",
+                keyboard=payment_inline_keyboard(lang))
         return
 
     if data == "user:cancel":
         answer_callback(cb_id)
         USER_STATE.pop(chat_id, None)
-        if msg_id:
-            delete_message(chat_id, msg_id)
-        send_photo(chat_id, PAYMENT_IMG, caption=t(lang, "cancelled") + "\n\n" + t(lang, "select_plan"), keyboard=payment_inline_keyboard(lang))
-        return
+        if msg_id: delete_message(chat_id, msg_id)
+        send_photo(chat_id, PAYMENT_IMG,
+                   caption=t(lang, "cancelled") + "\n\n" + t(lang, "select_plan"),
+                   keyboard=payment_inline_keyboard(lang)); return
 
     if data == "user:lang":
         answer_callback(cb_id)
-        send_message(chat_id, t(lang, "choose_language"), language_keyboard())
-        return
+        send_message(chat_id, t(lang, "choose_language"), language_keyboard()); return
 
     if data.startswith("search:"):
         plan_id = data.split(":", 1)[1]
         USER_STATE[chat_id] = {"flow": "search_currency", "plan_id": plan_id}
         answer_callback(cb_id)
-        send_message(chat_id, t(lang, "send_currency_code"))
-        return
+        send_message(chat_id, t(lang, "send_currency_code")); return
 
     if data == "cur:cancel":
         answer_callback(cb_id)
         USER_STATE.pop(chat_id, None)
-        send_photo(chat_id, PAYMENT_IMG, caption=t(lang, "cancelled"), keyboard=payment_inline_keyboard(lang))
-        return
+        send_photo(chat_id, PAYMENT_IMG, caption=t(lang, "cancelled"),
+                   keyboard=payment_inline_keyboard(lang)); return
 
     if data.startswith("cur:"):
         code = data.split(":", 1)[1]
-        state = USER_STATE.get(chat_id, {})
-        plan_id = state.get("plan_id")
+        plan_id = USER_STATE.get(chat_id, {}).get("plan_id")
         if not plan_id:
-            answer_callback(cb_id, "Please select a plan first.")
-            return
+            answer_callback(cb_id, "Please select a plan first."); return
         answer_callback(cb_id)
         create_payment_and_send(chat_id, plan_id, code)
-        USER_STATE.pop(chat_id, None)
-        return
+        USER_STATE.pop(chat_id, None); return
 
     if data.startswith("plan:"):
         parts = data.split(":")
         if len(parts) != 3:
-            answer_callback(cb_id)
-            return
+            answer_callback(cb_id); return
         _, plan_id, code = parts
         answer_callback(cb_id)
         create_payment_and_send(chat_id, plan_id, code)
-        USER_STATE.pop(chat_id, None)
-        return
+        USER_STATE.pop(chat_id, None); return
 
 # ============================================================
-# USER BOT UPDATE HANDLER
+# USER UPDATE HANDLER
 # ============================================================
 def process_update(update):
     if "callback_query" in update:
-        process_callback(update["callback_query"])
-        return
-
-    if "message" not in update:
-        return
+        process_callback(update["callback_query"]); return
+    if "message" not in update: return
     message = update["message"]
     chat_id = message.get("chat", {}).get("id")
-    if chat_id is None:
-        return
+    if chat_id is None: return
+
+    LAST_SEEN[chat_id] = time.time()
 
     text = message.get("text", "")
-    if not isinstance(text, str):
-        return
+    if not isinstance(text, str): return
     text = text.strip()
     lang = get_lang(chat_id)
 
-    if text == "/start":
-        USER_STATE.pop(chat_id, None)
-        caption = (
-            t(lang, "welcome")
-            + "\n\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            + t(lang, "choose_language")
-        )
-        send_photo(chat_id, WELCOME_IMG, caption=caption, keyboard=language_keyboard())
+    if is_banned(chat_id):
+        if text == "/start":
+            send_message(chat_id, t(lang, "banned_msg"))
         return
 
-    if text in ("/lang", "/language") or is_button(text, "lang_btn", lang):
-        send_message(chat_id, t(lang, "choose_language"), language_keyboard())
+    if MAINTENANCE_MODE and get_role(chat_id) == "user":
+        if text == "/start":
+            send_message(chat_id, t(lang, "maintenance"))
         return
+
+    if text == "/start":
+        USER_STATE.pop(chat_id, None)
+        caption = t(lang, "welcome") + "\n\n━━━━━━━━━━━━━━━━━━━━━━━\n\n" + t(lang, "choose_language")
+        send_photo(chat_id, WELCOME_IMG, caption=caption, keyboard=language_keyboard()); return
+
+    if text in ("/lang", "/language") or is_button(text, "lang_btn", lang):
+        send_message(chat_id, t(lang, "choose_language"), language_keyboard()); return
 
     if text == "/cancel" or is_button(text, "cancel_btn", lang):
         USER_STATE.pop(chat_id, None)
         if is_active(chat_id):
-            send_message(chat_id, t(lang, "cancelled") + "\n\n" + t(lang, "select_feature"), main_keyboard(lang))
+            send_message(chat_id, t(lang, "cancelled") + "\n\n" + t(lang, "select_feature"),
+                         main_keyboard(lang))
         else:
-            send_photo(chat_id, PAYMENT_IMG, caption=t(lang, "cancelled") + "\n\n" + t(lang, "select_plan"), keyboard=payment_inline_keyboard(lang))
+            send_photo(chat_id, PAYMENT_IMG,
+                       caption=t(lang, "cancelled") + "\n\n" + t(lang, "select_plan"),
+                       keyboard=payment_inline_keyboard(lang))
         return
 
     if is_button(text, "check_status_btn", lang):
         if is_active(chat_id):
-            expiry_str = time.strftime("%Y-%m-%d %H:%M:%S",
-                                       time.localtime(ACTIVATED_USERS[chat_id]))
-            send_message(
-                chat_id,
-                f"{t(lang, 'status_active')}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"{t(lang, 'expiry')}: <code>{expiry_str}</code>",
-                main_keyboard(lang),
-            )
+            expiry_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ACTIVATED_USERS[chat_id]))
+            send_message(chat_id,
+                f"{t(lang, 'status_active')}\n━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{t(lang, 'expiry')}: <code>{expiry_str}</code>", main_keyboard(lang))
         else:
-            send_photo(chat_id, PAYMENT_IMG, caption=f"{t(lang, 'status_inactive')}\n\n{t(lang, 'buy_plan')}", keyboard=payment_inline_keyboard(lang))
+            send_photo(chat_id, PAYMENT_IMG,
+                       caption=f"{t(lang, 'status_inactive')}\n\n{t(lang, 'buy_plan')}",
+                       keyboard=payment_inline_keyboard(lang))
         return
 
     if is_button(text, "deactivate_btn", lang):
         if chat_id in ACTIVATED_USERS:
-            del ACTIVATED_USERS[chat_id]
-            save_activation_data()
+            del ACTIVATED_USERS[chat_id]; save_activation_data()
         USER_STATE.pop(chat_id, None)
-        send_photo(chat_id, PAYMENT_IMG, caption=t(lang, "deactivated_msg"), keyboard=payment_inline_keyboard(lang))
-        return
+        send_photo(chat_id, PAYMENT_IMG, caption=t(lang, "deactivated_msg"),
+                   keyboard=payment_inline_keyboard(lang)); return
 
     state = USER_STATE.get(chat_id, {})
-
     if state.get("flow") == "search_currency":
         results = find_currencies(text, limit=12)
         if not results:
-            send_message(chat_id, t(lang, "no_match"))
-            return
+            send_message(chat_id, t(lang, "no_match")); return
         send_message(chat_id, t(lang, "found_currencies", n=len(results)),
-                     currency_inline_keyboard(results))
-        return
+                     currency_inline_keyboard(results)); return
 
     if state.get("flow") == "api_query":
         api_name = state.get("api_name")
         if not api_name:
             USER_STATE.pop(chat_id, None)
-            send_message(chat_id, t(lang, "select_option"), main_keyboard(lang))
-            return
+            send_message(chat_id, t(lang, "select_option"), main_keyboard(lang)); return
         query = text.strip()
         if not query:
-            send_message(chat_id, "❌ Query cannot be empty.")
-            return
+            send_message(chat_id, "❌ Query cannot be empty."); return
         config = API_CONFIG.get(api_name)
         send_message(chat_id, t(lang, "searching"))
         try:
-            response = HTTP.get(
-                config["url"] + quote_plus(query),
-                timeout=(API_CONNECT_TIMEOUT, API_READ_TIMEOUT),
-            )
-            response.raise_for_status()
-            api_result = response.json()
+            r = HTTP.get(config["url"] + quote_plus(query),
+                         timeout=(API_CONNECT_TIMEOUT, API_READ_TIMEOUT))
+            r.raise_for_status()
+            api_result = r.json()
             formatted = json.dumps(api_result, indent=2, ensure_ascii=False)
             formatted = formatted.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             max_length = 3900
@@ -1217,13 +1186,14 @@ def process_update(update):
                     send_message(chat_id, f"<pre>{formatted[i:i+max_length]}</pre>")
                 send_message(chat_id, "✅ Finished.", main_keyboard(lang))
         except Exception as e:
-            print("API Error:", e)
+            print("API err:", e)
             send_message(chat_id, t(lang, "no_result"), main_keyboard(lang))
-        USER_STATE.pop(chat_id, None)
-        return
+        USER_STATE.pop(chat_id, None); return
 
     if not is_active(chat_id):
-        send_photo(chat_id, PAYMENT_IMG, caption=f"{t(lang, 'locked')}\n\n{t(lang, 'buy_plan')}", keyboard=payment_inline_keyboard(lang))
+        send_photo(chat_id, PAYMENT_IMG,
+                   caption=f"{t(lang, 'locked')}\n\n{t(lang, 'buy_plan')}",
+                   keyboard=payment_inline_keyboard(lang))
         return
 
     api_name = next((name for name in API_CONFIG if name.strip() == text.strip()), None)
@@ -1231,8 +1201,7 @@ def process_update(update):
         config = API_CONFIG[api_name]
         USER_STATE[chat_id] = {"flow": "api_query", "api_name": api_name}
         send_message(chat_id, config["prompt"] + "\n\n" + t(lang, "send_cancel"),
-                     main_keyboard(lang))
-        return
+                     main_keyboard(lang)); return
 
     send_message(chat_id, t(lang, "select_option"), main_keyboard(lang))
 
@@ -1241,8 +1210,7 @@ def process_update(update):
 # ============================================================
 def admin_send_message(bot_number, chat_id, text, keyboard=None):
     api = ADMIN_TELEGRAM_APIS.get(bot_number)
-    if not api:
-        return None
+    if not api: return None
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if keyboard:
         data["reply_markup"] = json.dumps(keyboard, ensure_ascii=False)
@@ -1250,431 +1218,938 @@ def admin_send_message(bot_number, chat_id, text, keyboard=None):
         r = ADMIN_HTTP.post(api + "/sendMessage", data=data, timeout=(5, 35))
         return r.json()
     except Exception as e:
-        print(f"Admin bot {bot_number} sendMessage error:", e)
+        print(f"adminSend err: {e}")
         return None
 
 def admin_get_updates(bot_number, offset=None):
     api = ADMIN_TELEGRAM_APIS.get(bot_number)
-    if not api:
-        print(f"❌ Admin bot {bot_number}: API URL missing.")
-        return None
+    if not api: return None
     params = {"timeout": 30}
-    if offset:
-        params["offset"] = offset
+    if offset: params["offset"] = offset
     try:
         r = ADMIN_HTTP.get(api + "/getUpdates", params=params, timeout=(5, 35))
         if r.status_code != 200:
-            print(f"⚠️ Admin bot {bot_number} getUpdates HTTP {r.status_code}: {r.text[:200]}")
+            print(f"admin getUpdates HTTP {r.status_code}: {r.text[:200]}")
             return None
         return r.json()
     except Exception as e:
-        print(f"⚠️ Admin bot {bot_number} getUpdates exception: {e}")
+        print(f"admin getUpdates err: {e}")
         return None
 
 def admin_answer_callback(bot_number, callback_id, text=None):
     api = ADMIN_TELEGRAM_APIS.get(bot_number)
-    if not api or not callback_id or callback_id == "dummy":
-        return
+    if not api or not callback_id or callback_id == "dummy": return
     data = {"callback_query_id": callback_id}
-    if text:
-        data["text"] = text[:200]
+    if text: data["text"] = text[:200]
     try:
         ADMIN_HTTP.post(api + "/answerCallbackQuery", data=data, timeout=(5, 10))
     except Exception as e:
-        print(f"Admin answerCallback error: {e}")
+        print(f"answerCB err: {e}")
 
+def fmt_user_line(uid):
+    exp = ACTIVATED_USERS.get(uid)
+    lang = USER_LANGS.get(uid, "en")
+    if exp:
+        status = "✅" if exp > time.time() else "⌛"
+        exp_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(exp))
+    else:
+        status = "❌"
+        exp_str = "—"
+    ban = "🚫" if uid in BANNED_USERS else ""
+    seen = LAST_SEEN.get(uid)
+    seen_str = time.strftime("%m-%d %H:%M", time.localtime(seen)) if seen else "—"
+    return f"{status}{ban} <code>{uid}</code> · {lang} · exp {exp_str} · seen {seen_str}"
+
+def plans_summary_text():
+    lines = ["📦 <b>Available plans</b>"]
+    for pid, p in PLANS.items():
+        lines.append(f"• <code>{pid}</code> — {p['name']} ({p['days']}d, ${p['price_usd']:.0f})")
+    lines.append("\nUsage: <code>/activate USER_ID</code> or <code>/activate USER_ID plan_1</code>")
+    lines.append("Extend instead of reset: add <code>extend</code> at the end.")
+    lines.append("Custom days: <code>/activate USER_ID custom 45</code>")
+    return "\n".join(lines)
+
+# ---------- ADMIN CALLBACK ROUTER ----------
 def process_admin_callback(bot_number, cb):
+    # 🔧 FIX: declare globals BEFORE any use
+    global MAINTENANCE_MODE
+
     data = cb.get("data", "") or ""
     msg = cb.get("message") or {}
     chat_id = (msg.get("chat") or {}).get("id")
     cb_id = cb.get("id")
-    if chat_id is None:
-        return
+    if chat_id is None: return
 
-    if chat_id not in DYNAMIC_ADMINS:
-        admin_answer_callback(bot_number, cb_id, "⛔ Unauthorized")
-        return
+    if not is_admin(chat_id):
+        admin_answer_callback(bot_number, cb_id, "⛔ Unauthorized"); return
 
     if data == "admin:back":
         admin_answer_callback(bot_number, cb_id)
-        admin_send_message(
-            bot_number, chat_id,
-            "🛠 <b>A D M I N   P A N E L</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        admin_send_message(bot_number, chat_id,
+            "🛠 <b>A D M I N   P A N E L</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "👇 Choose an action below:",
-            admin_main_keyboard()
-        )
-        return
+            admin_main_keyboard()); return
 
     if data == "admin:list":
         admin_answer_callback(bot_number, cb_id)
         if not ACTIVATED_USERS:
-            admin_send_message(bot_number, chat_id, "📭 No active users.", admin_main_keyboard())
-            return
-        lines = ["👥 <b>ACTIVE USERS</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n"]
-        for uid, expiry in sorted(ACTIVATED_USERS.items(), key=lambda x: x[1], reverse=True):
-            exp_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(expiry))
-            status = "✅" if expiry > time.time() else "❌"
-            lines.append(f"{status} <code>{uid}</code> — {exp_str}")
-        admin_send_message(bot_number, chat_id, "\n".join(lines), admin_main_keyboard())
-        return
+            admin_send_message(bot_number, chat_id, "📭 No users.", admin_main_keyboard()); return
+        lines = ["👥 <b>USERS</b> (recent first)\n━━━━━━━━━━━━━━━━━━━━━━━\n"]
+        items = sorted(ACTIVATED_USERS.items(), key=lambda x: x[1], reverse=True)[:40]
+        for uid, _ in items:
+            lines.append(fmt_user_line(uid))
+        if len(ACTIVATED_USERS) > 40:
+            lines.append(f"\n…and {len(ACTIVATED_USERS)-40} more (use /export).")
+        admin_send_message(bot_number, chat_id, "\n".join(lines), admin_main_keyboard()); return
+
+    if data == "admin:banned":
+        admin_answer_callback(bot_number, cb_id)
+        if not BANNED_USERS:
+            admin_send_message(bot_number, chat_id, "✅ No banned users.", admin_main_keyboard()); return
+        lines = ["🚫 <b>BANNED USERS</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n"]
+        for uid, info in sorted(BANNED_USERS.items()):
+            reason = info.get("reason", "—")
+            lines.append(f"• <code>{uid}</code> — {reason}")
+        lines.append("\nUnban: <code>/unban USER_ID</code>")
+        admin_send_message(bot_number, chat_id, "\n".join(lines), admin_main_keyboard()); return
+
+    if data == "admin:online":
+        admin_answer_callback(bot_number, cb_id)
+        now = time.time()
+        recent = [(uid, ts) for uid, ts in LAST_SEEN.items() if now - ts < 86400]
+        recent.sort(key=lambda x: x[1], reverse=True)
+        if not recent:
+            admin_send_message(bot_number, chat_id, "💤 No activity in last 24h.", admin_main_keyboard()); return
+        lines = ["🟢 <b>ACTIVE (last 24h)</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n"]
+        for uid, ts in recent[:40]:
+            ago = int(now - ts)
+            if ago < 3600: mins = ago // 60; rel = f"{mins}m ago"
+            else: rel = f"{ago // 3600}h ago"
+            lines.append(f"• <code>{uid}</code> — {rel}")
+        admin_send_message(bot_number, chat_id, "\n".join(lines), admin_main_keyboard()); return
+
+    if data == "admin:logs":
+        admin_answer_callback(bot_number, cb_id)
+        if not ADMIN_LOG:
+            admin_send_message(bot_number, chat_id, "📭 No admin logs yet.", admin_main_keyboard()); return
+        lines = ["📜 <b>ADMIN LOG</b> (latest 40)\n━━━━━━━━━━━━━━━━━━━━━━━\n"]
+        for e in ADMIN_LOG[-40:][::-1]:
+            ts = time.strftime("%m-%d %H:%M", time.localtime(e["ts"]))
+            by = e["by"]; act = e["action"]; tgt = e.get("target", "")
+            lines.append(f"<code>{ts}</code> · <code>{by}</code> → {act} <code>{tgt}</code>")
+        admin_send_message(bot_number, chat_id, "\n".join(lines), admin_main_keyboard()); return
+
+    if data == "admin:revenue":
+        admin_answer_callback(bot_number, cb_id)
+        total_users = len(ACTIVATED_USERS)
+        now = time.time()
+        active = sum(1 for e in ACTIVATED_USERS.values() if e > now)
+        expired = total_users - active
+        avg_price = sum(p["price_usd"] for p in PLANS.values()) / len(PLANS)
+        est = round(avg_price * total_users, 2)
+        txt = (
+            f"💰 <b>REVENUE ESTIMATE</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👥 Paid users (all time): <b>{total_users}</b>\n"
+            f"✅ Active: <b>{active}</b>\n"
+            f"⌛ Expired: <b>{expired}</b>\n"
+            f"💵 Avg plan price: <b>${avg_price:.2f}</b>\n"
+            f"📊 Estimated revenue: <b>${est:.2f} USD</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<i>(estimated — not from payment logs)</i>"
+        )
+        admin_send_message(bot_number, chat_id, txt, admin_main_keyboard()); return
 
     if data == "admin:stats":
         admin_answer_callback(bot_number, cb_id)
-        total = len(ACTIVATED_USERS)
-        now = time.time()
-        active = sum(1 for exp in ACTIVATED_USERS.values() if exp > now)
-        expired = total - active
+        total = len(ACTIVATED_USERS); now = time.time()
+        active = sum(1 for e in ACTIVATED_USERS.values() if e > now)
+        banned = len(BANNED_USERS)
+        admins = len(DYNAMIC_ADMINS)
+        seen24 = sum(1 for ts in LAST_SEEN.values() if now - ts < 86400)
         stats_text = (
-            f"📊 <b>BOT STATISTICS</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"👥 Total Users: <b>{total}</b>\n"
-            f"✅ Active Users: <b>{active}</b>\n"
-            f"❌ Expired Users: <b>{expired}</b>\n"
-            f"👑 Total Admins: <b>{len(DYNAMIC_ADMINS)}</b>\n"
+            f"📊 <b>BOT STATISTICS</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👥 Total users: <b>{total}</b>\n"
+            f"✅ Active: <b>{active}</b>\n"
+            f"⌛ Expired: <b>{total - active}</b>\n"
+            f"🟢 Seen (24h): <b>{seen24}</b>\n"
+            f"🚫 Banned: <b>{banned}</b>\n"
+            f"🛡 Admins: <b>{admins}</b>\n"
+            f"🛠 Maintenance: <b>{'ON' if MAINTENANCE_MODE else 'OFF'}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━"
         )
-        admin_send_message(bot_number, chat_id, stats_text, admin_main_keyboard())
-        return
+        admin_send_message(bot_number, chat_id, stats_text, admin_main_keyboard()); return
 
     if data == "admin:db":
         admin_answer_callback(bot_number, cb_id)
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
                 content = f.read()
-            if len(content) > 3500:
-                content = content[:3500] + "\n... [TRUNCATED]"
+            if len(content) > 3500: content = content[:3500] + "\n... [TRUNCATED]"
             content = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            admin_send_message(bot_number, chat_id, f"📁 <b>RAW DATABASE</b>\n<pre>{content}</pre>", admin_main_keyboard())
+            admin_send_message(bot_number, chat_id, f"📁 <b>RAW DATABASE</b>\n<pre>{content}</pre>",
+                               admin_main_keyboard())
         except Exception as e:
-            admin_send_message(bot_number, chat_id, f"❌ Error reading DB: {e}", admin_main_keyboard())
+            admin_send_message(bot_number, chat_id, f"❌ Error: {e}", admin_main_keyboard())
         return
 
     if data == "admin:admins":
         admin_answer_callback(bot_number, cb_id)
-        admin_send_message(
-            bot_number, chat_id,
-            "👑 <b>A D M I N   M A N A G E M E N T</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━",
-            admin_admins_keyboard()
-        )
-        return
+        admin_send_message(bot_number, chat_id,
+            "👑 <b>A D M I N   M A N A G E M E N T</b>\n━━━━━━━━━━━━━━━━━━━━━━━",
+            admin_admins_keyboard()); return
 
     if data == "admin:list_admins":
         admin_answer_callback(bot_number, cb_id)
         lines = ["👑 <b>ADMIN LIST</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n"]
-        for admin_id in sorted(DYNAMIC_ADMINS):
-            tag = " (owner)" if OWNER_ID and str(admin_id) == OWNER_ID else ""
-            lines.append(f"• <code>{admin_id}</code>{tag}")
-        admin_send_message(bot_number, chat_id, "\n".join(lines), admin_admins_keyboard())
-        return
+        for aid in sorted(DYNAMIC_ADMINS):
+            lines.append(f"• <code>{aid}</code> — {role_badge(aid)}")
+        admin_send_message(bot_number, chat_id, "\n".join(lines), admin_admins_keyboard()); return
+
+    if data == "admin:maintenance":
+        if not is_owner(chat_id):
+            admin_answer_callback(bot_number, cb_id, "⛔ Owner only"); return
+        admin_answer_callback(bot_number, cb_id)
+        kb = {"inline_keyboard": [
+            [{"text": "🟢 Turn ON",  "callback_data": "admin:maintenance_on"}],
+            [{"text": "🔴 Turn OFF", "callback_data": "admin:maintenance_off"}],
+            [{"text": "🔙 Back",     "callback_data": "admin:back"}],
+        ]}
+        admin_send_message(bot_number, chat_id,
+            f"🛠 <b>MAINTENANCE MODE</b>\nCurrent: <b>{'ON' if MAINTENANCE_MODE else 'OFF'}</b>",
+            kb); return
+
+    if data == "admin:maintenance_on":
+        if not is_owner(chat_id):
+            admin_answer_callback(bot_number, cb_id, "⛔ Owner only"); return
+        MAINTENANCE_MODE = True
+        log_admin(chat_id, "maintenance ON")
+        admin_answer_callback(bot_number, cb_id, "🛠 ON")
+        admin_send_message(bot_number, chat_id, "🛠 Maintenance mode <b>ON</b>.", admin_main_keyboard()); return
+
+    if data == "admin:maintenance_off":
+        if not is_owner(chat_id):
+            admin_answer_callback(bot_number, cb_id, "⛔ Owner only"); return
+        MAINTENANCE_MODE = False
+        log_admin(chat_id, "maintenance OFF")
+        admin_answer_callback(bot_number, cb_id, "✅ OFF")
+        admin_send_message(bot_number, chat_id, "✅ Maintenance mode <b>OFF</b>.", admin_main_keyboard()); return
+
+    if data == "admin:whoami":
+        admin_answer_callback(bot_number, cb_id)
+        admin_send_message(bot_number, chat_id,
+            f"🆔 <code>{chat_id}</code>\n"
+            f"🏷 Role: <b>{role_badge(chat_id)}</b>\n"
+            f"🛠 Maintenance: <b>{'ON' if MAINTENANCE_MODE else 'OFF'}</b>",
+            admin_main_keyboard()); return
 
     if data == "admin:add_admin":
+        if not is_owner(chat_id):
+            admin_answer_callback(bot_number, cb_id, "⛔ Owner only"); return
         admin_answer_callback(bot_number, cb_id)
         ADMIN_STATE[chat_id] = "awaiting_add_admin"
-        admin_send_message(bot_number, chat_id, "➕ <b>ADD ADMIN</b>\n\nSend me the Telegram User ID you want to promote to Admin.\n\nSend /cancel to abort.", admin_admins_keyboard())
-        return
+        admin_send_message(bot_number, chat_id,
+            "➕ <b>ADD ADMIN</b>\n\nSend the Telegram User ID to promote.\n\n/cancel to abort.",
+            admin_admins_keyboard()); return
 
     if data == "admin:remove_admin":
+        if not is_owner(chat_id):
+            admin_answer_callback(bot_number, cb_id, "⛔ Owner only"); return
         admin_answer_callback(bot_number, cb_id)
         ADMIN_STATE[chat_id] = "awaiting_remove_admin"
-        admin_send_message(bot_number, chat_id, "➖ <b>REMOVE ADMIN</b>\n\nSend me the Telegram User ID you want to demote.\n\nSend /cancel to abort.", admin_admins_keyboard())
-        return
+        admin_send_message(bot_number, chat_id,
+            "➖ <b>REMOVE ADMIN</b>\n\nSend the Telegram User ID to demote.\n\n/cancel to abort.",
+            admin_admins_keyboard()); return
 
     if data == "admin:broadcast":
         admin_answer_callback(bot_number, cb_id)
         ADMIN_STATE[chat_id] = "awaiting_broadcast"
-        admin_send_message(bot_number, chat_id, "📢 <b>BROADCAST MODE</b>\n\nSend me the message you want to send to all users. (Send /cancel to abort)", admin_main_keyboard())
-        return
+        admin_send_message(bot_number, chat_id,
+            "📢 <b>BROADCAST</b>\n\nSend message to broadcast to all users. /cancel to abort.",
+            admin_main_keyboard()); return
 
     if data == "admin:remove_all":
+        if not is_owner(chat_id):
+            admin_answer_callback(bot_number, cb_id, "⛔ Owner only"); return
         admin_answer_callback(bot_number, cb_id)
-        ACTIVATED_USERS.clear()
-        save_activation_data()
-        admin_send_message(bot_number, chat_id, "🧹 All users have been removed from the database.", admin_main_keyboard())
+        ACTIVATED_USERS.clear(); save_activation_data()
+        log_admin(chat_id, "remove_all users")
+        admin_send_message(bot_number, chat_id, "🧹 All users removed.", admin_main_keyboard()); return
+
+    if data == "admin:activate_help":
+        admin_answer_callback(bot_number, cb_id)
+        admin_send_message(bot_number, chat_id,
+            "🎁 <b>ACTIVATE USER</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Pick a plan for the user. Then send their Telegram ID.\n\n"
+            "<b>Quick commands:</b>\n"
+            "<code>/activate USER_ID</code> — choose plan by buttons\n"
+            "<code>/activate USER_ID plan_1</code> — direct\n"
+            "<code>/activate USER_ID plan_1 extend</code> — extend, don't reset\n"
+            "<code>/activate USER_ID custom 45</code> — custom days\n\n"
+            f"{plans_summary_text()}")
         return
 
-def is_owner(chat_id):
-    return bool(OWNER_ID) and str(chat_id) == OWNER_ID
-
-def process_admin_command(bot_number, chat_id, text, message):
-    if text in ("/start", "/help"):
+    if data == "admin:revoke_help":
+        admin_answer_callback(bot_number, cb_id)
         admin_send_message(bot_number, chat_id,
-            "🛠 <b>A D M I N   P A N E L</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "Use the buttons below to manage the bot.\n\n"
-            "<b>Available commands:</b>\n"
-            "/add_user USER_ID DAYS\n"
-            "/check USER_ID\n"
-            "/list\n"
-            "/stats\n"
-            "/db\n"
-            "/broadcast\n"
-            "/deactivate USER_ID\n"
-            "/remove_all\n"
-            "/whoami\n"
-            "/logout\n"
-            "/setpassword NEW_PASSWORD  (owner only)",
-            admin_main_keyboard()
-        )
+            "❌ <b>REVOKE PLAN</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Usage: <code>/revoke USER_ID</code> — sets expiry to now.")
         return
 
-    if text == "/whoami":
+    if data.startswith("admin:activate_for:"):
+        target_str = data.split(":", 2)[2]
+        try: target_uid = int(target_str)
+        except ValueError:
+            admin_answer_callback(bot_number, cb_id, "❌ Bad ID"); return
+        admin_answer_callback(bot_number, cb_id)
         admin_send_message(bot_number, chat_id,
-            f"🆔 Your Chat ID: <code>{chat_id}</code>\n"
-            f"👑 Admin: <b>{'Yes' if chat_id in DYNAMIC_ADMINS else 'No'}</b>\n"
-            f"🧑‍💼 Owner: <b>{'Yes' if is_owner(chat_id) else 'No'}</b>",
+            f"🎁 <b>Pick a plan for</b> <code>{target_uid}</code>:\n\n"
+            f"(set mode = reset expiry to new total)",
+            admin_plan_picker_keyboard(target_uid, mode="set"))
+        return
+
+    if data.startswith("admin:do_activate:"):
+        try:
+            _, _, uid_str, plan_id, mode = data.split(":", 4)
+            target_uid = int(uid_str)
+            plan = PLANS.get(plan_id)
+            if not plan:
+                admin_answer_callback(bot_number, cb_id, "❌ Unknown plan"); return
+        except Exception:
+            admin_answer_callback(bot_number, cb_id, "❌ Bad callback"); return
+
+        new_expiry, added, prev = grant_plan(target_uid, plan["days"], mode=mode)
+        log_admin(chat_id, f"activate:{mode}", f"{target_uid} {plan_id} +{plan['days']}d")
+        admin_answer_callback(bot_number, cb_id, "✅ Activated")
+        expiry_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(new_expiry))
+        sent = notify_user_activated(target_uid, plan["name"], plan["days"], new_expiry)
+        admin_send_message(bot_number, chat_id,
+            f"✅ <b>Activated</b>\n"
+            f"👤 User: <code>{target_uid}</code>\n"
+            f"📦 Plan: <b>{plan['name']}</b> ({plan['days']}d)\n"
+            f"🔁 Mode: <b>{mode}</b>\n"
+            f"⏳ New expiry: <code>{expiry_str}</code>\n"
+            f"📨 DM to user: {'✅' if sent else '❌ (blocked or unreachable)'}",
             admin_main_keyboard())
         return
 
-    if text == "/logout":
+    if data.startswith("admin:custom_activate:"):
+        try:
+            _, _, uid_str, mode = data.split(":", 3)
+            target_uid = int(uid_str)
+        except Exception:
+            admin_answer_callback(bot_number, cb_id, "❌ Bad callback"); return
+        admin_answer_callback(bot_number, cb_id)
+        ADMIN_STATE[chat_id] = {"flow": "awaiting_custom_days",
+                                "target": target_uid, "mode": mode}
+        admin_send_message(bot_number, chat_id,
+            f"✏️ Send number of <b>days</b> to add for <code>{target_uid}</code>.\n\n"
+            f"Mode: <b>{mode}</b>\n/cancel to abort.")
+        return
+
+# ---------- ADMIN COMMANDS ----------
+def process_admin_command(bot_number, chat_id, text, message):
+    # 🔧 FIX: declare all globals at the top, BEFORE any use
+    global CURRENT_PASSWORD, MAINTENANCE_MODE
+
+    args = text.split()
+    cmd = args[0].lower() if args else ""
+
+    if cmd in ("/start", "/help"):
+        admin_send_message(bot_number, chat_id,
+            "🛠 <b>A D M I N   P A N E L</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "<b>🎁 Activation</b>\n"
+            "/activate ID              — pick plan via buttons\n"
+            "/activate ID plan_1       — direct assign\n"
+            "/activate ID plan_1 extend — add, don't reset\n"
+            "/activate ID custom 45    — custom days\n"
+            "/activate_many ID1,ID2 plan_1\n"
+            "/revoke ID                — cancel plan\n\n"
+            "<b>User management</b>\n"
+            "/add_user ID DAYS · /deactivate ID\n"
+            "/extend ID DAYS · /reduce ID DAYS\n"
+            "/check ID · /role ID\n\n"
+            "<b>Moderation</b>\n"
+            "/ban ID [reason] · /unban ID · /banned\n"
+            "/msg ID TEXT\n\n"
+            "<b>Notes</b>\n"
+            "/note ID TEXT · /notes ID · /delnote ID N\n\n"
+            "<b>Reports</b>\n"
+            "/list · /stats · /revenue · /online · /logs · /export\n\n"
+            "<b>Owner only</b>\n"
+            "/add_admin ID · /remove_admin ID\n"
+            "/setpassword NEW · /maintenance on|off · /remove_all\n\n"
+            "/plans · /whoami · /logout",
+            admin_main_keyboard()); return
+
+    if cmd == "/whoami":
+        admin_send_message(bot_number, chat_id,
+            f"🆔 <code>{chat_id}</code>\n"
+            f"🏷 Role: <b>{role_badge(chat_id)}</b>\n"
+            f"🛠 Maintenance: <b>{'ON' if MAINTENANCE_MODE else 'OFF'}</b>",
+            admin_main_keyboard()); return
+
+    if cmd == "/plans":
+        admin_send_message(bot_number, chat_id, plans_summary_text(), admin_main_keyboard()); return
+
+    if cmd == "/logout":
         if is_owner(chat_id):
             admin_send_message(bot_number, chat_id,
-                "❌ Owner cannot logout (remove OWNER_ID env var to disable owner mode).",
-                admin_main_keyboard())
-            return
-        DYNAMIC_ADMINS.discard(chat_id)
-        save_admins()
+                "❌ Owner can't logout (remove OWNER_ID env to disable).",
+                admin_main_keyboard()); return
+        DYNAMIC_ADMINS.discard(chat_id); save_admins()
+        log_admin(chat_id, "logout")
         admin_send_message(bot_number, chat_id,
-            "👋 You have been logged out. Send /login &lt;password&gt; to log back in.")
+            "👋 Logged out. Send /login &lt;password&gt; to log back in."); return
+
+    if cmd == "/setpassword":
+        if not is_owner(chat_id):
+            admin_send_message(bot_number, chat_id, "⛔ Owner only.", admin_main_keyboard()); return
+        if len(args) < 2:
+            admin_send_message(bot_number, chat_id,
+                "Usage: <code>/setpassword NEW_PASSWORD</code>", admin_main_keyboard()); return
+        CURRENT_PASSWORD = args[1]
+        save_password()
+        log_admin(chat_id, "setpassword")
+        admin_send_message(bot_number, chat_id,
+            "✅ <b>Password updated.</b>", admin_main_keyboard()); return
+
+    if cmd == "/maintenance":
+        if not is_owner(chat_id):
+            admin_send_message(bot_number, chat_id, "⛔ Owner only.", admin_main_keyboard()); return
+        if len(args) < 2 or args[1].lower() not in ("on", "off"):
+            admin_send_message(bot_number, chat_id,
+                "Usage: <code>/maintenance on|off</code>", admin_main_keyboard()); return
+        MAINTENANCE_MODE = (args[1].lower() == "on")
+        log_admin(chat_id, f"maintenance {args[1].lower()}")
+        admin_send_message(bot_number, chat_id,
+            f"🛠 Maintenance <b>{'ON' if MAINTENANCE_MODE else 'OFF'}</b>.",
+            admin_main_keyboard()); return
+
+    if cmd == "/add_admin":
+        if not is_owner(chat_id):
+            admin_send_message(bot_number, chat_id, "⛔ Owner only.", admin_main_keyboard()); return
+        if len(args) != 2:
+            admin_send_message(bot_number, chat_id, "Usage: /add_admin ID", admin_main_keyboard()); return
+        try:
+            target = int(args[1])
+            DYNAMIC_ADMINS.add(target); save_admins()
+            log_admin(chat_id, "add_admin", target)
+            admin_send_message(bot_number, chat_id,
+                f"✅ <code>{target}</code> is now Admin.", admin_main_keyboard())
+        except ValueError:
+            admin_send_message(bot_number, chat_id, "❌ Invalid ID.", admin_main_keyboard())
         return
 
-    if text.startswith("/setpassword"):
+    if cmd == "/remove_admin":
         if not is_owner(chat_id):
-            admin_send_message(bot_number, chat_id, "⛔ Only the OWNER can change the password.", admin_main_keyboard())
+            admin_send_message(bot_number, chat_id, "⛔ Owner only.", admin_main_keyboard()); return
+        if len(args) != 2:
+            admin_send_message(bot_number, chat_id, "Usage: /remove_admin ID", admin_main_keyboard()); return
+        try:
+            target = int(args[1])
+            if is_owner(target):
+                admin_send_message(bot_number, chat_id, "❌ Cannot remove owner.", admin_main_keyboard()); return
+            DYNAMIC_ADMINS.discard(target); save_admins()
+            log_admin(chat_id, "remove_admin", target)
+            admin_send_message(bot_number, chat_id,
+                f"✅ <code>{target}</code> removed.", admin_main_keyboard())
+        except ValueError:
+            admin_send_message(bot_number, chat_id, "❌ Invalid ID.", admin_main_keyboard())
+        return
+
+    if cmd == "/activate":
+        if len(args) < 2:
+            admin_send_message(bot_number, chat_id,
+                "🎁 <b>ACTIVATE USER</b>\n\n"
+                "Usage:\n"
+                "<code>/activate USER_ID</code> — choose plan by buttons\n"
+                "<code>/activate USER_ID plan_1</code>\n"
+                "<code>/activate USER_ID plan_1 extend</code>\n"
+                "<code>/activate USER_ID custom 45</code>\n"
+                "<code>/activate USER_ID custom 45 extend</code>\n\n"
+                f"{plans_summary_text()}",
+                admin_main_keyboard())
             return
-        parts = text.split(maxsplit=1)
-        if len(parts) != 2 or not parts[1].strip():
-            admin_send_message(bot_number, chat_id, "Usage: <code>/setpassword NEW_PASSWORD</code>", admin_main_keyboard())
+        try:
+            target_uid = int(args[1])
+        except ValueError:
+            admin_send_message(bot_number, chat_id, "❌ Invalid USER_ID.", admin_main_keyboard()); return
+
+        if len(args) == 2:
+            admin_send_message(bot_number, chat_id,
+                f"🎁 <b>Pick a plan for</b> <code>{target_uid}</code>:",
+                admin_plan_picker_keyboard(target_uid, mode="set"))
             return
-        global CURRENT_PASSWORD
-        CURRENT_PASSWORD = parts[1].strip()
-        save_password()
+
+        plan_arg = args[2].lower()
+        mode = "extend" if (len(args) >= 4 and args[-1].lower() == "extend") else "set"
+
+        if plan_arg == "custom":
+            if len(args) < 4:
+                admin_send_message(bot_number, chat_id,
+                    "Usage: /activate USER_ID custom DAYS [extend]",
+                    admin_main_keyboard()); return
+            try:
+                days = int(args[3])
+                if days < 1 or days > 3650:
+                    raise ValueError
+            except ValueError:
+                admin_send_message(bot_number, chat_id, "❌ Days must be 1–3650.", admin_main_keyboard()); return
+            new_expiry, added, prev = grant_plan(target_uid, days, mode=mode)
+            log_admin(chat_id, f"activate:custom:{mode}", f"{target_uid} +{days}d")
+            sent = notify_user_activated(target_uid, f"Custom {days}d", days, new_expiry)
+            expiry_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(new_expiry))
+            admin_send_message(bot_number, chat_id,
+                f"✅ <b>Activated (custom)</b>\n"
+                f"👤 <code>{target_uid}</code>\n"
+                f"➕ +{days} days · mode <b>{mode}</b>\n"
+                f"⏳ New expiry: <code>{expiry_str}</code>\n"
+                f"📨 DM: {'✅' if sent else '❌'}",
+                admin_main_keyboard())
+            return
+
+        plan = PLANS.get(plan_arg)
+        if not plan:
+            admin_send_message(bot_number, chat_id,
+                f"❌ Unknown plan <code>{plan_arg}</code>.\n\n{plans_summary_text()}",
+                admin_main_keyboard()); return
+
+        new_expiry, added, prev = grant_plan(target_uid, plan["days"], mode=mode)
+        log_admin(chat_id, f"activate:{mode}", f"{target_uid} {plan_arg} +{plan['days']}d")
+        sent = notify_user_activated(target_uid, plan["name"], plan["days"], new_expiry)
+        expiry_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(new_expiry))
         admin_send_message(bot_number, chat_id,
-            "✅ <b>Admin password updated.</b>\n\n"
-            "All admins must now use the new password on next /login.",
+            f"✅ <b>Activated</b>\n"
+            f"👤 User: <code>{target_uid}</code>\n"
+            f"📦 Plan: <b>{plan['name']}</b> ({plan['days']}d)\n"
+            f"🔁 Mode: <b>{mode}</b>\n"
+            f"⏳ New expiry: <code>{expiry_str}</code>\n"
+            f"📨 DM to user: {'✅' if sent else '❌ (blocked?)'}",
             admin_main_keyboard())
         return
 
-    if text == "/list":
-        process_admin_callback(bot_number, {"data": "admin:list", "message": message})
+    if cmd == "/activate_many":
+        if len(args) < 3:
+            admin_send_message(bot_number, chat_id,
+                "Usage: /activate_many ID1,ID2,ID3 plan_1 [extend]",
+                admin_main_keyboard()); return
+        plan = PLANS.get(args[2].lower())
+        if not plan:
+            admin_send_message(bot_number, chat_id,
+                f"❌ Unknown plan <code>{args[2]}</code>.", admin_main_keyboard()); return
+        mode = "extend" if (len(args) >= 4 and args[-1].lower() == "extend") else "set"
+        ids_raw = args[1].split(",")
+        ok, fail = [], []
+        for s in ids_raw:
+            s = s.strip()
+            if not s: continue
+            try:
+                uid = int(s)
+                new_expiry, _, _ = grant_plan(uid, plan["days"], mode=mode)
+                notify_user_activated(uid, plan["name"], plan["days"], new_expiry)
+                ok.append(uid)
+            except ValueError:
+                fail.append(s)
+        log_admin(chat_id, f"activate_many:{mode}", f"{len(ok)} ok / {len(fail)} fail")
+        admin_send_message(bot_number, chat_id,
+            f"✅ Bulk activation done.\n"
+            f"Plan: <b>{plan['name']}</b> · mode <b>{mode}</b>\n"
+            f"✔️ Success: <b>{len(ok)}</b>\n"
+            f"❌ Failed: <b>{len(fail)}</b>"
+            + (f"\n\nBad IDs: <code>{', '.join(fail)}</code>" if fail else ""),
+            admin_main_keyboard())
         return
 
-    if text == "/stats":
-        process_admin_callback(bot_number, {"data": "admin:stats", "message": message})
-        return
-
-    if text == "/db":
-        process_admin_callback(bot_number, {"data": "admin:db", "message": message})
-        return
-
-    if text == "/broadcast":
-        process_admin_callback(bot_number, {"data": "admin:broadcast", "message": message})
-        return
-
-    if text == "/remove_all":
-        process_admin_callback(bot_number, {"data": "admin:remove_all", "message": message})
-        return
-
-    if text.startswith("/check"):
-        parts = text.split()
-        if len(parts) != 2:
-            admin_send_message(bot_number, chat_id, "Usage: /check USER_ID", admin_main_keyboard())
-            return
+    if cmd == "/revoke":
+        if len(args) != 2:
+            admin_send_message(bot_number, chat_id, "Usage: /revoke USER_ID", admin_main_keyboard()); return
         try:
-            target_id = int(parts[1])
+            target_uid = int(args[1])
         except ValueError:
-            admin_send_message(bot_number, chat_id, "❌ Invalid User ID.", admin_main_keyboard())
-            return
-        if target_id in ACTIVATED_USERS:
-            expiry = ACTIVATED_USERS[target_id]
-            lang = USER_LANGS.get(target_id, "en")
-            remaining = expiry - time.time()
-            if remaining > 0:
-                days_left = int(remaining // 86400)
-                hours_left = int((remaining % 86400) // 3600)
-                status = f"✅ Active ({days_left}d {hours_left}h remaining)"
-            else:
-                status = "❌ Expired"
-            exp_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(expiry))
-            msg = (
-                f"👤 <b>USER INFO</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🆔 ID: <code>{target_id}</code>\n"
-                f"🌐 Lang: {lang}\n"
-                f"📅 Expiry: <code>{exp_str}</code>\n"
-                f"📊 Status: {status}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━"
-            )
-            admin_send_message(bot_number, chat_id, msg, admin_main_keyboard())
+            admin_send_message(bot_number, chat_id, "❌ Invalid ID.", admin_main_keyboard()); return
+        if target_uid in ACTIVATED_USERS:
+            del ACTIVATED_USERS[target_uid]; save_activation_data()
+            log_admin(chat_id, "revoke", target_uid)
+            lang = get_lang(target_uid)
+            send_message(target_uid,
+                f"{t(lang,'deactivated_msg')}", payment_inline_keyboard(lang))
+            admin_send_message(bot_number, chat_id,
+                f"❌ Plan revoked for <code>{target_uid}</code>.", admin_main_keyboard())
         else:
-            admin_send_message(bot_number, chat_id, f"❌ User <code>{target_id}</code> not found in database.", admin_main_keyboard())
+            admin_send_message(bot_number, chat_id,
+                "❌ User has no active plan.", admin_main_keyboard())
         return
 
-    if text.startswith("/add_user"):
-        parts = text.split()
-        if len(parts) != 3:
-            admin_send_message(bot_number, chat_id, "Usage: /add_user USER_ID DAYS", admin_main_keyboard())
-            return
+    if cmd == "/list":
+        process_admin_callback(bot_number, {"data": "admin:list", "message": message}); return
+    if cmd == "/stats":
+        process_admin_callback(bot_number, {"data": "admin:stats", "message": message}); return
+    if cmd == "/revenue":
+        process_admin_callback(bot_number, {"data": "admin:revenue", "message": message}); return
+    if cmd == "/online":
+        process_admin_callback(bot_number, {"data": "admin:online", "message": message}); return
+    if cmd == "/logs":
+        process_admin_callback(bot_number, {"data": "admin:logs", "message": message}); return
+    if cmd == "/banned":
+        process_admin_callback(bot_number, {"data": "admin:banned", "message": message}); return
+    if cmd == "/db":
+        process_admin_callback(bot_number, {"data": "admin:db", "message": message}); return
+    if cmd == "/broadcast":
+        process_admin_callback(bot_number, {"data": "admin:broadcast", "message": message}); return
+    if cmd == "/remove_all":
+        process_admin_callback(bot_number, {"data": "admin:remove_all", "message": message}); return
+
+    if cmd == "/export":
         try:
-            target_id = int(parts[1]); days = int(parts[2])
+            import csv, io as _io
+            buf = _io.StringIO()
+            w = csv.writer(buf)
+            w.writerow(["user_id", "expiry_ts", "expiry_human", "lang", "banned", "last_seen", "notes"])
+            for uid in sorted(ACTIVATED_USERS.keys()):
+                exp = ACTIVATED_USERS.get(uid, 0)
+                lang = USER_LANGS.get(uid, "en")
+                banned = "yes" if uid in BANNED_USERS else "no"
+                seen = LAST_SEEN.get(uid)
+                seen_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(seen)) if seen else ""
+                notes = " | ".join(n["text"] for n in USER_NOTES.get(uid, []))
+                w.writerow([uid, int(exp),
+                            time.strftime("%Y-%m-%d %H:%M", time.localtime(exp)) if exp else "",
+                            lang, banned, seen_str, notes])
+            content = buf.getvalue()
+            tmp_path = "/tmp/export_users.csv"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            url = ADMIN_TELEGRAM_APIS[bot_number] + "/sendDocument"
+            with open(tmp_path, "rb") as f:
+                ADMIN_HTTP.post(url,
+                    data={"chat_id": chat_id, "caption": f"📁 Export · {len(ACTIVATED_USERS)} users"},
+                    files={"document": ("users.csv", f, "text/csv")},
+                    timeout=(10, 60))
+            log_admin(chat_id, "export")
+        except Exception as e:
+            admin_send_message(bot_number, chat_id, f"❌ Export failed: {e}", admin_main_keyboard())
+        return
+
+    if cmd == "/check" or cmd == "/role":
+        if len(args) != 2:
+            admin_send_message(bot_number, chat_id, f"Usage: {cmd} USER_ID", admin_main_keyboard()); return
+        try:
+            target = int(args[1])
         except ValueError:
-            admin_send_message(bot_number, chat_id, "❌ Invalid format.", admin_main_keyboard())
-            return
-        current = ACTIVATED_USERS.get(target_id, 0)
-        if current < time.time():
-            current = time.time()
-        ACTIVATED_USERS[target_id] = current + (days * 86400)
+            admin_send_message(bot_number, chat_id, "❌ Invalid ID.", admin_main_keyboard()); return
+        exp = ACTIVATED_USERS.get(target)
+        lang = USER_LANGS.get(target, "en")
+        role = role_badge(target)
+        ban_info = BANNED_USERS.get(target)
+        seen = LAST_SEEN.get(target)
+        if exp:
+            remaining = exp - time.time()
+            if remaining > 0:
+                d = int(remaining // 86400); h = int((remaining % 86400) // 3600)
+                status = f"✅ Active ({d}d {h}h)"
+            else:
+                status = "⌛ Expired"
+            exp_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(exp))
+        else:
+            status = "❌ Not in DB"; exp_str = "—"
+        ban_line = f"🚫 Banned — {ban_info.get('reason','—')}" if ban_info else "🟢 Not banned"
+        seen_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(seen)) if seen else "—"
+        notes = USER_NOTES.get(target, [])
+        note_block = ""
+        if notes:
+            note_block = "\n\n📝 <b>NOTES</b>\n" + "\n".join(
+                f"{i+1}. {n['text']}" for i, n in enumerate(notes[-5:]))
+        msg = (f"👤 <b>USER INFO</b>\n━━━━━━━━━━━━━━━━━━━━━━━\n"
+               f"🆔 <code>{target}</code>\n"
+               f"🏷 Role: <b>{role}</b>\n"
+               f"🌐 Lang: {lang}\n"
+               f"📅 Expiry: <code>{exp_str}</code>\n"
+               f"📊 Status: {status}\n"
+               f"{ban_line}\n"
+               f"👀 Last seen: {seen_str}"
+               f"{note_block}\n━━━━━━━━━━━━━━━━━━━━━━━")
+        admin_send_message(bot_number, chat_id, msg, admin_main_keyboard()); return
+
+    if cmd == "/add_user":
+        if len(args) != 3:
+            admin_send_message(bot_number, chat_id, "Usage: /add_user ID DAYS", admin_main_keyboard()); return
+        try:
+            target = int(args[1]); days = int(args[2])
+        except ValueError:
+            admin_send_message(bot_number, chat_id, "❌ Invalid.", admin_main_keyboard()); return
+        cur = ACTIVATED_USERS.get(target, 0)
+        if cur < time.time(): cur = time.time()
+        ACTIVATED_USERS[target] = cur + days * 86400
         save_activation_data()
-        admin_send_message(bot_number, chat_id, f"✅ User <code>{target_id}</code> activated for {days} days.", admin_main_keyboard())
-        return
+        log_admin(chat_id, "add_user", f"{target} +{days}d")
+        admin_send_message(bot_number, chat_id,
+            f"✅ <code>{target}</code> + {days} days.", admin_main_keyboard()); return
 
-    if text.startswith("/deactivate"):
-        parts = text.split()
-        if len(parts) != 2:
-            admin_send_message(bot_number, chat_id, "Usage: /deactivate USER_ID", admin_main_keyboard())
-            return
+    if cmd in ("/extend", "/reduce"):
+        if len(args) != 3:
+            admin_send_message(bot_number, chat_id, f"Usage: {cmd} ID DAYS", admin_main_keyboard()); return
         try:
-            target_id = int(parts[1])
+            target = int(args[1]); days = int(args[2])
         except ValueError:
-            admin_send_message(bot_number, chat_id, "❌ Invalid ID.", admin_main_keyboard())
-            return
-        if target_id in ACTIVATED_USERS:
-            del ACTIVATED_USERS[target_id]
-            save_activation_data()
-            admin_send_message(bot_number, chat_id, f"🔒 User <code>{target_id}</code> deactivated.", admin_main_keyboard())
+            admin_send_message(bot_number, chat_id, "❌ Invalid.", admin_main_keyboard()); return
+        cur = ACTIVATED_USERS.get(target, time.time())
+        delta = days * 86400 if cmd == "/extend" else -days * 86400
+        ACTIVATED_USERS[target] = max(cur + delta, 0)
+        save_activation_data()
+        log_admin(chat_id, cmd[1:], f"{target} {days}d")
+        admin_send_message(bot_number, chat_id,
+            f"✅ <code>{target}</code> adjusted by {days} days.", admin_main_keyboard()); return
+
+    if cmd == "/deactivate":
+        if len(args) != 2:
+            admin_send_message(bot_number, chat_id, "Usage: /deactivate ID", admin_main_keyboard()); return
+        try:
+            target = int(args[1])
+        except ValueError:
+            admin_send_message(bot_number, chat_id, "❌ Invalid ID.", admin_main_keyboard()); return
+        if target in ACTIVATED_USERS:
+            del ACTIVATED_USERS[target]; save_activation_data()
+            log_admin(chat_id, "deactivate", target)
+            admin_send_message(bot_number, chat_id, f"🔒 <code>{target}</code> deactivated.",
+                               admin_main_keyboard())
         else:
             admin_send_message(bot_number, chat_id, "❌ User not found.", admin_main_keyboard())
         return
 
-    admin_send_message(bot_number, chat_id, "❓ Unknown command. Use /help to see available commands.", admin_main_keyboard())
+    if cmd == "/ban":
+        if len(args) < 2:
+            admin_send_message(bot_number, chat_id, "Usage: /ban ID [reason]", admin_main_keyboard()); return
+        try:
+            target = int(args[1])
+        except ValueError:
+            admin_send_message(bot_number, chat_id, "❌ Invalid ID.", admin_main_keyboard()); return
+        if is_admin(target):
+            admin_send_message(bot_number, chat_id, "❌ Cannot ban an admin.", admin_main_keyboard()); return
+        reason = " ".join(args[2:]) or "—"
+        BANNED_USERS[target] = {"reason": reason, "ts": int(time.time()), "by": chat_id}
+        save_banned()
+        log_admin(chat_id, "ban", f"{target} ({reason})")
+        send_message(target, t(get_lang(target), "banned_msg"))
+        admin_send_message(bot_number, chat_id,
+            f"🚫 <code>{target}</code> banned. Reason: {reason}",
+            admin_main_keyboard()); return
 
+    if cmd == "/unban":
+        if len(args) != 2:
+            admin_send_message(bot_number, chat_id, "Usage: /unban ID", admin_main_keyboard()); return
+        try:
+            target = int(args[1])
+        except ValueError:
+            admin_send_message(bot_number, chat_id, "❌ Invalid ID.", admin_main_keyboard()); return
+        if target in BANNED_USERS:
+            del BANNED_USERS[target]; save_banned()
+            log_admin(chat_id, "unban", target)
+            admin_send_message(bot_number, chat_id, f"✅ <code>{target}</code> unbanned.",
+                               admin_main_keyboard())
+        else:
+            admin_send_message(bot_number, chat_id, "❌ Not banned.", admin_main_keyboard())
+        return
+
+    if cmd == "/msg":
+        if len(args) < 3:
+            admin_send_message(bot_number, chat_id, "Usage: /msg ID TEXT", admin_main_keyboard()); return
+        try:
+            target = int(args[1])
+        except ValueError:
+            admin_send_message(bot_number, chat_id, "❌ Invalid ID.", admin_main_keyboard()); return
+        body = " ".join(args[2:])
+        res = send_message(target, f"📩 <b>Message from admin</b>\n\n{body}")
+        if res and res.get("ok"):
+            log_admin(chat_id, "msg", target)
+            admin_send_message(bot_number, chat_id, "✅ Sent.", admin_main_keyboard())
+        else:
+            admin_send_message(bot_number, chat_id, "❌ Failed (user may have blocked bot).",
+                               admin_main_keyboard())
+        return
+
+    if cmd == "/note":
+        if len(args) < 3:
+            admin_send_message(bot_number, chat_id, "Usage: /note ID TEXT", admin_main_keyboard()); return
+        try:
+            target = int(args[1])
+        except ValueError:
+            admin_send_message(bot_number, chat_id, "❌ Invalid ID.", admin_main_keyboard()); return
+        body = " ".join(args[2:])
+        USER_NOTES.setdefault(target, []).append({"text": body, "ts": int(time.time()), "by": chat_id})
+        save_notes()
+        log_admin(chat_id, "note", target)
+        admin_send_message(bot_number, chat_id, "📝 Note added.", admin_main_keyboard()); return
+
+    if cmd == "/notes":
+        if len(args) != 2:
+            admin_send_message(bot_number, chat_id, "Usage: /notes ID", admin_main_keyboard()); return
+        try:
+            target = int(args[1])
+        except ValueError:
+            admin_send_message(bot_number, chat_id, "❌ Invalid ID.", admin_main_keyboard()); return
+        notes = USER_NOTES.get(target, [])
+        if not notes:
+            admin_send_message(bot_number, chat_id, "📭 No notes.", admin_main_keyboard()); return
+        lines = [f"📝 <b>NOTES — <code>{target}</code></b>\n━━━━━━━━━━━━━━━━━━━━━━━"]
+        for i, n in enumerate(notes):
+            ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(n["ts"]))
+            lines.append(f"{i+1}. {n['text']}\n   <i>{ts} · by {n['by']}</i>")
+        admin_send_message(bot_number, chat_id, "\n".join(lines), admin_main_keyboard()); return
+
+    if cmd == "/delnote":
+        if len(args) != 3:
+            admin_send_message(bot_number, chat_id, "Usage: /delnote ID N", admin_main_keyboard()); return
+        try:
+            target = int(args[1]); idx = int(args[2]) - 1
+        except ValueError:
+            admin_send_message(bot_number, chat_id, "❌ Invalid.", admin_main_keyboard()); return
+        notes = USER_NOTES.get(target, [])
+        if 0 <= idx < len(notes):
+            notes.pop(idx); save_notes()
+            log_admin(chat_id, "delnote", f"{target} #{idx+1}")
+            admin_send_message(bot_number, chat_id, "🗑 Deleted.", admin_main_keyboard())
+        else:
+            admin_send_message(bot_number, chat_id, "❌ Note index out of range.", admin_main_keyboard())
+        return
+
+    admin_send_message(bot_number, chat_id,
+        "❓ Unknown command. Use /help.", admin_main_keyboard())
+
+# ---------- ADMIN UPDATE ROUTER ----------
 def process_admin_update(bot_number, update):
     if "callback_query" in update:
-        process_admin_callback(bot_number, update["callback_query"])
-        return
-
-    if "message" not in update:
-        return
+        process_admin_callback(bot_number, update["callback_query"]); return
+    if "message" not in update: return
     message = update["message"]
     chat_id = (message.get("chat") or {}).get("id")
-    if chat_id is None:
-        return
+    if chat_id is None: return
 
     text_raw = message.get("text", "")
     text = text_raw.strip() if isinstance(text_raw, str) else ""
 
-    # ================= LOGIN (shared password) =================
-    if chat_id not in DYNAMIC_ADMINS:
+    if not is_admin(chat_id):
         if text in ("/start", "/help", "/whoami", "/id"):
-            admin_send_message(
-                bot_number, chat_id,
+            admin_send_message(bot_number, chat_id,
                 f"🔐 <b>Admin Bot</b>\n\n"
                 f"🆔 Your Chat ID: <code>{chat_id}</code>\n\n"
-                f"To log in, send:\n"
-                f"<code>/login YOUR_ADMIN_PASSWORD</code>\n\n"
-                f"💡 Owner: set OWNER_ID=<code>{chat_id}</code> in env to auto-login."
-            )
+                f"Send <code>/login YOUR_ADMIN_PASSWORD</code>\n\n"
+                f"💡 Owner: set OWNER_ID=<code>{chat_id}</code> in env to auto-login.")
             return
 
         if text.startswith("/login"):
             parts = text.split(maxsplit=1)
             if len(parts) != 2 or not parts[1].strip():
-                admin_send_message(bot_number, chat_id, "Usage: <code>/login YOUR_PASSWORD</code>")
-                return
+                admin_send_message(bot_number, chat_id, "Usage: <code>/login YOUR_PASSWORD</code>"); return
             supplied = parts[1].strip()
-
-            # Accept: shared password OR either bot token (backup)
             if (supplied == CURRENT_PASSWORD) or (supplied in (ADMIN_BOT_TOKEN_1, USER_BOT_TOKEN)):
-                DYNAMIC_ADMINS.add(chat_id)
-                save_admins()
+                DYNAMIC_ADMINS.add(chat_id); save_admins()
+                log_admin(chat_id, "login")
                 admin_send_message(bot_number, chat_id,
-                    "✅ <b>Login successful!</b>\nYou are now an Admin.",
+                    f"✅ <b>Login OK.</b>\n🏷 Role: <b>{role_badge(chat_id)}</b>",
                     admin_main_keyboard())
             else:
                 admin_send_message(bot_number, chat_id, "❌ Incorrect password.")
             return
 
-        # Bare-message login (only the shared password alone)
-        if text == CURRENT_PASSWORD and text:
-            DYNAMIC_ADMINS.add(chat_id)
-            save_admins()
+        if text and text == CURRENT_PASSWORD:
+            DYNAMIC_ADMINS.add(chat_id); save_admins()
+            log_admin(chat_id, "login (bare)")
             admin_send_message(bot_number, chat_id,
-                "✅ <b>Login successful!</b>\nYou are now an Admin.",
+                f"✅ <b>Login OK.</b>\n🏷 Role: <b>{role_badge(chat_id)}</b>",
                 admin_main_keyboard())
             return
 
         admin_send_message(bot_number, chat_id,
-            f"⛔ You are not authorized.\n\n"
-            f"🆔 Your Chat ID: <code>{chat_id}</code>\n\n"
-            f"Send <code>/login YOUR_PASSWORD</code> to authenticate.")
+            f"⛔ Not authorized.\n🆔 Your ID: <code>{chat_id}</code>\n\n"
+            f"Send <code>/login YOUR_PASSWORD</code>.")
         return
 
-    # ============ ADMIN MANAGEMENT STATES ============
     if ADMIN_STATE.get(chat_id) == "awaiting_add_admin":
         if text == "/cancel":
             ADMIN_STATE.pop(chat_id, None)
-            admin_send_message(bot_number, chat_id, "❌ Cancelled.", admin_admins_keyboard())
-            return
+            admin_send_message(bot_number, chat_id, "❌ Cancelled.", admin_admins_keyboard()); return
         try:
             new_admin = int(text)
-            DYNAMIC_ADMINS.add(new_admin)
-            save_admins()
+            DYNAMIC_ADMINS.add(new_admin); save_admins()
             ADMIN_STATE.pop(chat_id, None)
-            admin_send_message(bot_number, chat_id, f"✅ User <code>{new_admin}</code> is now an Admin!", admin_admins_keyboard())
+            log_admin(chat_id, "add_admin", new_admin)
+            admin_send_message(bot_number, chat_id,
+                f"✅ <code>{new_admin}</code> is now Admin.", admin_admins_keyboard())
         except ValueError:
-            admin_send_message(bot_number, chat_id, "❌ Invalid ID. Please send a numeric Telegram User ID.", admin_admins_keyboard())
+            admin_send_message(bot_number, chat_id, "❌ Invalid ID.", admin_admins_keyboard())
         return
 
     if ADMIN_STATE.get(chat_id) == "awaiting_remove_admin":
         if text == "/cancel":
             ADMIN_STATE.pop(chat_id, None)
-            admin_send_message(bot_number, chat_id, "❌ Cancelled.", admin_admins_keyboard())
-            return
+            admin_send_message(bot_number, chat_id, "❌ Cancelled.", admin_admins_keyboard()); return
         try:
             target = int(text)
         except ValueError:
-            admin_send_message(bot_number, chat_id, "❌ Invalid ID. Please send a numeric Telegram User ID.", admin_admins_keyboard())
-            return
+            admin_send_message(bot_number, chat_id, "❌ Invalid ID.", admin_admins_keyboard()); return
         if is_owner(target):
-            admin_send_message(bot_number, chat_id, "❌ Cannot remove the OWNER.", admin_admins_keyboard())
-            return
+            admin_send_message(bot_number, chat_id, "❌ Cannot remove owner.", admin_admins_keyboard()); return
         if target in DYNAMIC_ADMINS:
-            DYNAMIC_ADMINS.discard(target)
-            save_admins()
+            DYNAMIC_ADMINS.discard(target); save_admins()
             ADMIN_STATE.pop(chat_id, None)
-            admin_send_message(bot_number, chat_id, f"✅ User <code>{target}</code> has been removed from Admins.", admin_admins_keyboard())
+            log_admin(chat_id, "remove_admin", target)
+            admin_send_message(bot_number, chat_id,
+                f"✅ <code>{target}</code> removed.", admin_admins_keyboard())
         else:
-            admin_send_message(bot_number, chat_id, "❌ User is not an Admin.", admin_admins_keyboard())
+            admin_send_message(bot_number, chat_id, "❌ Not an admin.", admin_admins_keyboard())
+        return
+
+    st = ADMIN_STATE.get(chat_id)
+    if isinstance(st, dict) and st.get("flow") == "awaiting_custom_days":
+        if text == "/cancel":
+            ADMIN_STATE.pop(chat_id, None)
+            admin_send_message(bot_number, chat_id, "❌ Cancelled.", admin_main_keyboard()); return
+        try:
+            days = int(text)
+            if days < 1 or days > 3650: raise ValueError
+        except ValueError:
+            admin_send_message(bot_number, chat_id, "❌ Send a number between 1 and 3650.")
+            return
+        target = st["target"]; mode = st.get("mode", "set")
+        new_expiry, _, _ = grant_plan(target, days, mode=mode)
+        log_admin(chat_id, f"activate:custom:{mode}", f"{target} +{days}d")
+        sent = notify_user_activated(target, f"Custom {days}d", days, new_expiry)
+        ADMIN_STATE.pop(chat_id, None)
+        expiry_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(new_expiry))
+        admin_send_message(bot_number, chat_id,
+            f"✅ <b>Activated (custom)</b>\n"
+            f"👤 <code>{target}</code>\n"
+            f"➕ +{days} days · mode <b>{mode}</b>\n"
+            f"⏳ New expiry: <code>{expiry_str}</code>\n"
+            f"📨 DM: {'✅' if sent else '❌'}",
+            admin_main_keyboard())
         return
 
     if ADMIN_STATE.get(chat_id) == "awaiting_broadcast":
         if text == "/cancel":
             ADMIN_STATE.pop(chat_id, None)
-            admin_send_message(bot_number, chat_id, "❌ Broadcast cancelled.", admin_main_keyboard())
-            return
+            admin_send_message(bot_number, chat_id, "❌ Cancelled.", admin_main_keyboard()); return
         ADMIN_STATE.pop(chat_id, None)
-        admin_send_message(bot_number, chat_id, "⏳ Broadcasting... Please wait.")
+        admin_send_message(bot_number, chat_id, "⏳ Broadcasting…")
         success = failed = 0
-        for user_id in list(ACTIVATED_USERS.keys()):
+        for uid in list(ACTIVATED_USERS.keys()):
+            if is_banned(uid): continue
             try:
-                res = send_message(user_id, f"📢 <b>ANNOUNCEMENT</b>\n\n{text}")
-                if res and res.get("ok"):
-                    success += 1
-                else:
-                    failed += 1
+                res = send_message(uid, f"📢 <b>ANNOUNCEMENT</b>\n\n{text}")
+                success += 1 if (res and res.get("ok")) else 0
+                failed  += 0 if (res and res.get("ok")) else 1
                 time.sleep(0.05)
             except Exception:
                 failed += 1
-        admin_send_message(bot_number, chat_id, f"✅ Broadcast complete!\nSent: {success}\nFailed: {failed}", admin_main_keyboard())
-        return
+        log_admin(chat_id, "broadcast", f"ok={success} fail={failed}")
+        admin_send_message(bot_number, chat_id,
+            f"✅ Broadcast done.\nSent: {success} · Failed: {failed}",
+            admin_main_keyboard()); return
 
-    # ============ COMMANDS ============
     process_admin_command(bot_number, chat_id, text, message)
 
 def admin_bot_loop(bot_number):
-    api = ADMIN_TELEGRAM_APIS.get(bot_number)
-    print(f"🚀 Admin bot {bot_number} polling started → {api}")
+    print(f"🚀 Admin bot {bot_number} polling started → {ADMIN_TELEGRAM_APIS.get(bot_number)}")
     offset = None
     backoff = 1
     while True:
@@ -1687,12 +2162,12 @@ def admin_bot_loop(bot_number):
                     try:
                         process_admin_update(bot_number, update)
                     except Exception as ue:
-                        print(f"Admin update handler error: {ue}")
+                        print(f"admin update err: {ue}")
             else:
                 time.sleep(min(backoff, 10))
                 backoff = min(backoff * 2, 30)
         except Exception as e:
-            print(f"Admin bot {bot_number} loop error:", e)
+            print(f"admin loop err: {e}")
             time.sleep(min(backoff, 10))
             backoff = min(backoff * 2, 30)
 
@@ -1701,17 +2176,17 @@ def admin_bot_loop(bot_number):
 # ============================================================
 def self_ping_loop():
     if not SELF_URL or not SELF_URL.startswith("http"):
-        print("ℹ️  SELF_URL not set — skipping self-ping loop.")
+        print("ℹ️  SELF_URL not set — skipping.")
         return
     target = SELF_URL.rstrip("/") + "/health"
-    print(f"🔁 Self-ping loop started → {target} every {SELF_PING_INTERVAL}s")
+    print(f"🔁 Self-ping → {target} every {SELF_PING_INTERVAL}s")
     time.sleep(30)
     while True:
         try:
             r = HTTP.get(target, timeout=(5, 15))
-            print(f"💓 self-ping {r.status_code} @ {time.strftime('%H:%M:%S')}")
+            print(f"💓 {r.status_code} @ {time.strftime('%H:%M:%S')}")
         except Exception as e:
-            print(f"⚠️  self-ping failed: {e}")
+            print(f"⚠️  self-ping fail: {e}")
         time.sleep(SELF_PING_INTERVAL)
 
 # ============================================================
@@ -1721,52 +2196,38 @@ def main():
     load_activation_data()
     load_password()
     load_admins()
+    load_banned()
+    load_notes()
+    load_log()
+    load_lastseen()
 
     if not USER_BOT_TOKEN or USER_BOT_TOKEN == "YOUR_USER_BOT_TOKEN":
-        print("ERROR: Set USER_BOT_TOKEN environment variable.")
-        return
+        print("ERROR: USER_BOT_TOKEN missing."); return
 
     try:
         r = HTTP.get(USER_TELEGRAM_API + "/getMe", timeout=(5, 10))
         info = r.json()
         if not info.get("ok"):
-            print("ERROR: Invalid USER bot token.")
-            return
-        print("✅ Connected to USER bot:", info["result"]["username"])
+            print("ERROR: Invalid USER token."); return
+        print("✅ USER bot:", info["result"]["username"])
     except Exception as e:
-        print("Could not connect to Telegram (user bot):", e)
-        return
+        print("USER bot connect error:", e); return
 
     try:
         r = ADMIN_HTTP.get(ADMIN_TELEGRAM_APIS[1] + "/getMe", timeout=(5, 10))
         info = r.json()
-        if info.get("ok"):
-            print("✅ Connected to ADMIN bot:", info["result"]["username"])
-        else:
-            print("⚠️ ADMIN bot token invalid:", info)
+        print(f"✅ ADMIN bot: {info['result']['username']}" if info.get("ok") else f"⚠️ {info}")
     except Exception as e:
-        print("⚠️ Could not verify ADMIN bot:", e)
-
-    if not IPN_CALLBACK_URL:
-        print("=" * 60)
-        print("⚠️  IPN_CALLBACK_URL not set — users won't auto-activate.")
-        print("=" * 60)
-
-    if not OWNER_ID:
-        print("=" * 60)
-        print("⚠️  OWNER_ID not set. Send /whoami to the admin bot to learn your ID,")
-        print("    then set OWNER_ID=<id> and ADMIN_PASSWORD=<secret> in env.")
-        print("=" * 60)
+        print("⚠️ ADMIN bot verify fail:", e)
 
     threading.Thread(target=admin_bot_loop, args=(1,), daemon=True).start()
     threading.Thread(target=self_ping_loop, daemon=True).start()
 
     print("=" * 60)
-    print("Telegram Bot Started (language-first flow, all currencies)")
+    print("Bot started · owner:", OWNER_ID or "(unset)")
     print("=" * 60)
 
-    offset = None
-    backoff = 1
+    offset = None; backoff = 1
     while True:
         try:
             result = get_updates(offset)
@@ -1774,20 +2235,15 @@ def main():
                 backoff = 1
                 for update in result.get("result", []):
                     offset = update.get("update_id", 0) + 1
-                    try:
-                        process_update(update)
-                    except Exception as ue:
-                        print("Update handler error:", ue)
+                    try: process_update(update)
+                    except Exception as ue: print("update err:", ue)
             else:
-                time.sleep(min(backoff, 10))
-                backoff = min(backoff * 2, 30)
+                time.sleep(min(backoff, 10)); backoff = min(backoff * 2, 30)
         except KeyboardInterrupt:
-            print("\nBot stopped.")
-            break
+            print("\nStopped."); break
         except Exception as e:
-            print("Main loop error:", e)
-            time.sleep(min(backoff, 10))
-            backoff = min(backoff * 2, 30)
+            print("main loop err:", e)
+            time.sleep(min(backoff, 10)); backoff = min(backoff * 2, 30)
 
 if __name__ == "__main__":
     main()

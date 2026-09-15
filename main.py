@@ -71,7 +71,7 @@ ADMIN_BOT_TOKEN_1 = os.getenv("ADMIN_BOT_TOKEN_1", "8916442795:AAETD7lL1snL27ab0
 NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY", "ZQRJG4Z-5PQ48ZM-M5C8PVH-V01CXT0")
 NOWPAYMENTS_IPN_SECRET = os.getenv("NOWPAYMENTS_IPN_SECRET", "Gsx0umqAvAcrfOGfEOguqrL9UjhmoHoH")
 
-IPN_CALLBACK_URL = os.getenv("IPN_CALLBACK_URL", "https://osint.onrender.com/nowpayments_webhook")
+IPN_CALLBACK_URL = os.getenv("IPN_CALLBACK_URL", "https://24-7-onilen.onrender.com/nowpayments_webhook")
 NOWPAYMENTS_API_URL = "https://api.nowpayments.io/v1"
 
 # ==========================================
@@ -83,7 +83,7 @@ OWNER_ID = os.getenv("OWNER_ID", "6326027750").strip()
 # ==========================================
 # 24/7 KEEP-ALIVE
 # ==========================================
-SELF_URL = os.getenv("SELF_URL", "https://osint.onrender.com")
+SELF_URL = os.getenv("SELF_URL", "https://24-7-onilen.onrender.com")
 SELF_PING_INTERVAL = int(os.getenv("SELF_PING_INTERVAL", "600"))
 
 # ==========================================
@@ -627,12 +627,16 @@ def send_photo(chat_id, photo, caption=None, keyboard=None, parse_mode="HTML"):
         return None
 
 def get_updates(offset=None):
+    """🔧 CHANGED: quieter 409 handling."""
     url = USER_TELEGRAM_API + "/getUpdates"
     params = {"timeout": 30}
     if offset is not None:
         params["offset"] = offset
     try:
         r = HTTP.get(url, params=params, timeout=(TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT))
+        if r.status_code == 409:
+            # Conflict — another instance is polling. Sleep quietly.
+            return {"ok": False, "conflict": True}
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -1222,12 +1226,15 @@ def admin_send_message(bot_number, chat_id, text, keyboard=None):
         return None
 
 def admin_get_updates(bot_number, offset=None):
+    """🔧 CHANGED: quieter 409 handling."""
     api = ADMIN_TELEGRAM_APIS.get(bot_number)
     if not api: return None
     params = {"timeout": 30}
     if offset: params["offset"] = offset
     try:
         r = ADMIN_HTTP.get(api + "/getUpdates", params=params, timeout=(5, 35))
+        if r.status_code == 409:
+            return {"ok": False, "conflict": True}
         if r.status_code != 200:
             print(f"admin getUpdates HTTP {r.status_code}: {r.text[:200]}")
             return None
@@ -1271,7 +1278,6 @@ def plans_summary_text():
 
 # ---------- ADMIN CALLBACK ROUTER ----------
 def process_admin_callback(bot_number, cb):
-    # 🔧 FIX: declare globals BEFORE any use
     global MAINTENANCE_MODE
 
     data = cb.get("data", "") or ""
@@ -1548,7 +1554,6 @@ def process_admin_callback(bot_number, cb):
 
 # ---------- ADMIN COMMANDS ----------
 def process_admin_command(bot_number, chat_id, text, message):
-    # 🔧 FIX: declare all globals at the top, BEFORE any use
     global CURRENT_PASSWORD, MAINTENANCE_MODE
 
     args = text.split()
@@ -2163,6 +2168,9 @@ def admin_bot_loop(bot_number):
                         process_admin_update(bot_number, update)
                     except Exception as ue:
                         print(f"admin update err: {ue}")
+            elif result and result.get("conflict"):
+                # 🔧 409 detected — sleep quietly, don't spam
+                time.sleep(5)
             else:
                 time.sleep(min(backoff, 10))
                 backoff = min(backoff * 2, 30)
@@ -2170,6 +2178,22 @@ def admin_bot_loop(bot_number):
             print(f"admin loop err: {e}")
             time.sleep(min(backoff, 10))
             backoff = min(backoff * 2, 30)
+
+# ============================================================
+# DELETE WEBHOOK (🔧 NEW — fixes stale webhook 409s)
+# ============================================================
+def clear_webhook(api_base, label):
+    try:
+        r = HTTP.get(api_base + "/deleteWebhook",
+                     params={"drop_pending_updates": "true"},
+                     timeout=(5, 10))
+        j = r.json()
+        if j.get("ok"):
+            print(f"🧹 {label}: webhook cleared, pending updates dropped.")
+        else:
+            print(f"⚠️ {label}: deleteWebhook → {j}")
+    except Exception as e:
+        print(f"⚠️ {label}: deleteWebhook failed — {e}")
 
 # ============================================================
 # SELF-PING
@@ -2204,6 +2228,10 @@ def main():
     if not USER_BOT_TOKEN or USER_BOT_TOKEN == "YOUR_USER_BOT_TOKEN":
         print("ERROR: USER_BOT_TOKEN missing."); return
 
+    # 🔧 NEW: clear webhooks before polling
+    clear_webhook(USER_TELEGRAM_API, "USER bot")
+    clear_webhook(ADMIN_TELEGRAM_APIS[1], "ADMIN bot")
+
     try:
         r = HTTP.get(USER_TELEGRAM_API + "/getMe", timeout=(5, 10))
         info = r.json()
@@ -2237,6 +2265,9 @@ def main():
                     offset = update.get("update_id", 0) + 1
                     try: process_update(update)
                     except Exception as ue: print("update err:", ue)
+            elif result and result.get("conflict"):
+                # 🔧 409 detected — sleep quietly, don't spam
+                time.sleep(5)
             else:
                 time.sleep(min(backoff, 10)); backoff = min(backoff * 2, 30)
         except KeyboardInterrupt:

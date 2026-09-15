@@ -1,4 +1,4 @@
 Flask
 requests
-gunicorn
-qrcode[pil]
+qrcode
+Pillow

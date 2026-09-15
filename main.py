@@ -61,7 +61,11 @@ def run_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port, threaded=True)
 
-threading.Thread(target=run_server, daemon=True).start()
+# 🔧 FIX: thread is started inside main(), NOT here.
+# Reason: @app.route("/nowpayments_webhook") is registered later in the file.
+# Starting the server here caused:
+#   AssertionError: The setup method 'route' can no longer be called
+# because Flask refuses new routes after serving its first request.
 
 # ==========================================
 # CONFIGURATION
@@ -627,7 +631,6 @@ def send_photo(chat_id, photo, caption=None, keyboard=None, parse_mode="HTML"):
         return None
 
 def get_updates(offset=None):
-    """🔧 CHANGED: quieter 409 handling."""
     url = USER_TELEGRAM_API + "/getUpdates"
     params = {"timeout": 30}
     if offset is not None:
@@ -635,7 +638,6 @@ def get_updates(offset=None):
     try:
         r = HTTP.get(url, params=params, timeout=(TELEGRAM_CONNECT_TIMEOUT, TELEGRAM_READ_TIMEOUT))
         if r.status_code == 409:
-            # Conflict — another instance is polling. Sleep quietly.
             return {"ok": False, "conflict": True}
         r.raise_for_status()
         return r.json()
@@ -1226,7 +1228,6 @@ def admin_send_message(bot_number, chat_id, text, keyboard=None):
         return None
 
 def admin_get_updates(bot_number, offset=None):
-    """🔧 CHANGED: quieter 409 handling."""
     api = ADMIN_TELEGRAM_APIS.get(bot_number)
     if not api: return None
     params = {"timeout": 30}
@@ -2169,7 +2170,6 @@ def admin_bot_loop(bot_number):
                     except Exception as ue:
                         print(f"admin update err: {ue}")
             elif result and result.get("conflict"):
-                # 🔧 409 detected — sleep quietly, don't spam
                 time.sleep(5)
             else:
                 time.sleep(min(backoff, 10))
@@ -2180,7 +2180,7 @@ def admin_bot_loop(bot_number):
             backoff = min(backoff * 2, 30)
 
 # ============================================================
-# DELETE WEBHOOK (🔧 NEW — fixes stale webhook 409s)
+# DELETE WEBHOOK
 # ============================================================
 def clear_webhook(api_base, label):
     try:
@@ -2217,6 +2217,12 @@ def self_ping_loop():
 # MAIN
 # ============================================================
 def main():
+    # 🔧 FIX: Start Flask AFTER all @app.route(...) decorators have run.
+    # Every route in this file (including /nowpayments_webhook) is registered
+    # at import time. Starting the server here prevents:
+    #   AssertionError: The setup method 'route' can no longer be called
+    threading.Thread(target=run_server, daemon=True).start()
+
     load_activation_data()
     load_password()
     load_admins()
@@ -2228,7 +2234,6 @@ def main():
     if not USER_BOT_TOKEN or USER_BOT_TOKEN == "YOUR_USER_BOT_TOKEN":
         print("ERROR: USER_BOT_TOKEN missing."); return
 
-    # 🔧 NEW: clear webhooks before polling
     clear_webhook(USER_TELEGRAM_API, "USER bot")
     clear_webhook(ADMIN_TELEGRAM_APIS[1], "ADMIN bot")
 
@@ -2266,7 +2271,6 @@ def main():
                     try: process_update(update)
                     except Exception as ue: print("update err:", ue)
             elif result and result.get("conflict"):
-                # 🔧 409 detected — sleep quietly, don't spam
                 time.sleep(5)
             else:
                 time.sleep(min(backoff, 10)); backoff = min(backoff * 2, 30)

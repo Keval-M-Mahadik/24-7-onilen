@@ -61,12 +61,6 @@ def run_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port, threaded=True)
 
-# 🔧 FIX: thread is started inside main(), NOT here.
-# Reason: @app.route("/nowpayments_webhook") is registered later in the file.
-# Starting the server here caused:
-#   AssertionError: The setup method 'route' can no longer be called
-# because Flask refuses new routes after serving its first request.
-
 # ==========================================
 # CONFIGURATION
 # ==========================================
@@ -268,6 +262,14 @@ PLANS = {
     "plan_4": {"name": "1 Year",   "price_usd": 35.00, "days": 365},
 }
 
+# Emojis used for each plan tier in keyboards
+PLAN_EMOJI = {
+    "plan_1": "🥉",
+    "plan_2": "🥈",
+    "plan_3": "🥇",
+    "plan_4": "👑",
+}
+
 DB_FILE = os.getenv("DB_FILE", "activation_data.json")
 db_lock = threading.Lock()
 
@@ -364,7 +366,6 @@ TEXTS = {
         "all_currencies": "📋 All",
         "back": "🔙 Back",
         "cancel_btn": "❌ Cancel",
-        "deactivate_btn": "🔒 Deactivate",
         "check_status_btn": "🔄 Status",
         "lang_btn": "🌐 Language",
         "not_available": "❌ That currency is not available.",
@@ -430,7 +431,6 @@ TEXTS = {
         "all_currencies": "📋 सभी",
         "back": "🔙 वापस",
         "cancel_btn": "❌ रद्द करें",
-        "deactivate_btn": "🔒 निष्क्रिय करें",
         "check_status_btn": "🔄 स्थिति",
         "lang_btn": "🌐 भाषा",
         "not_available": "❌ वह मुद्रा उपलब्ध नहीं है।",
@@ -486,20 +486,20 @@ def is_button(text, key, lang):
     return normalize_text(text) in candidates
 
 # ============================================================
-# API CONFIG
+# API CONFIG — cleaned button names (no trailing spaces)
 # ============================================================
 API_CONFIG = {
-    "🪪 Aadhaar Info ": {"url": "https://travelers-creature-sarah-rogers.trycloudflare.com/search?q=", "prompt": "🪪 Send a 12 Digit Aadhaar Number to Get🪪 information 💀"},
-    "📞 Number Info ": {"url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=", "prompt": "📞Send a 10 Digit Indian Number (Without +91) to Get🪪 information 💀     Example (9712073901)"},
-    "📍PIN Code Lookup": {"url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=", "prompt": "📍 Send PIN code to get information 💀 (number)"},
-    "🚘 Vehicle Info": {"url": "https://parivahan-x.paskhinpf9.workers.dev/?vehicle=", "prompt": "🚘 Send Vehicle Number 2.0 to get information💀(write in small letters)"},
-    "🤖 Telegram ID / Username ": {"url": "https://anon-tg-info.vercel.app/telegram?key=temp1750&username=", "prompt": "🤖 Send the authorized Telegram username:"},
-    "🆔 PAN Info ": {"url": "https://paninfo.noob73613.workers.dev/pan?pan=", "prompt": "🆔 Send the authorized PAN reference:"},
-    "📱 Telegram Chat ID ": {"url": "https://anon-tg-info.vercel.app/tgReg_beta?userid=", "prompt": "📱 Send the authorized Chat ID:"},
-    "💳 IFSC Info ": {"url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=", "prompt": "💳 Send the IFSC code number:-"},
-    "🏦 UPI INFO ": {"url": "https://upi-id-to-info-by-abhigyan.onrender.com/upi/", "prompt": "🏦 Send the authorized UPI ID:"},
-    "📧 Advanced Email Info ": {"url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=", "prompt": "📧 Send the authorized email:"},
-    "🌐 IP Address Info": {"url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=", "prompt": "🌐 Send the IP address:"}
+    "🪪 Aadhaar Info":   {"url": "https://travelers-creature-sarah-rogers.trycloudflare.com/search?q=", "prompt": "🪪 Send a 12 Digit Aadhaar Number to Get🪪 information 💀"},
+    "📞 Number Info":    {"url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=", "prompt": "📞Send a 10 Digit Indian Number (Without +91) to Get🪪 information 💀     Example (9712073901)"},
+    "📍 PIN Code":       {"url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=", "prompt": "📍 Send PIN code to get information 💀 (number)"},
+    "🚘 Vehicle Info":   {"url": "https://parivahan-x.paskhinpf9.workers.dev/?vehicle=", "prompt": "🚘 Send Vehicle Number 2.0 to get information💀(write in small letters)"},
+    "🤖 TG Username":    {"url": "https://anon-tg-info.vercel.app/telegram?key=temp1750&username=", "prompt": "🤖 Send the authorized Telegram username:"},
+    "🆔 PAN Info":       {"url": "https://paninfo.noob73613.workers.dev/pan?pan=", "prompt": "🆔 Send the authorized PAN reference:"},
+    "📱 TG Chat ID":     {"url": "https://anon-tg-info.vercel.app/tgReg_beta?userid=", "prompt": "📱 Send the authorized Chat ID:"},
+    "💳 IFSC Info":      {"url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=", "prompt": "💳 Send the IFSC code number:-"},
+    "🏦 UPI Info":       {"url": "https://upi-id-to-info-by-abhigyan.onrender.com/upi/", "prompt": "🏦 Send the authorized UPI ID:"},
+    "📧 Email Info":     {"url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=", "prompt": "📧 Send the authorized email:"},
+    "🌐 IP Info":        {"url": "https://talks-chain-restrictions-statistics.trycloudflare.com/search?query=", "prompt": "🌐 Send the IP address:"}
 }
 
 # ============================================================
@@ -673,7 +673,7 @@ def generate_qr_bytes(data):
     return buf.getvalue()
 
 def copy_address_keyboard(address):
-    return {"inline_keyboard": [[{"text": "📋 Copy Address", "copy_text": {"text": address}}]]}
+    return {"inline_keyboard": [[{"text": "📋  Copy Address", "copy_text": {"text": address}}]]}
 
 def build_payment_uri(currency, address, amount=None):
     currency = (currency or "").lower()
@@ -754,27 +754,34 @@ def get_min_amount_cached(crypto_currency, fiat="usd"):
     return mn, mf
 
 # ============================================================
-# USER KEYBOARDS
+# USER KEYBOARDS — polished
 # ============================================================
 def payment_inline_keyboard(lang="en"):
+    """Premium-looking plan buttons with tier emojis."""
     return {"inline_keyboard": [
-        [{"text": "1 Month - $13.00", "callback_data": "select_plan:plan_1"},
-         {"text": "3 Months - $18.00", "callback_data": "select_plan:plan_2"}],
-        [{"text": "6 Months - $25.00", "callback_data": "select_plan:plan_3"},
-         {"text": "1 Year - $35.00", "callback_data": "select_plan:plan_4"}],
+        [{"text": "🥉  1 Month  ·  $13",  "callback_data": "select_plan:plan_1"},
+         {"text": "🥈  3 Months  ·  $18", "callback_data": "select_plan:plan_2"}],
+        [{"text": "🥇  6 Months  ·  $25", "callback_data": "select_plan:plan_3"},
+         {"text": "👑  1 Year  ·  $35",   "callback_data": "select_plan:plan_4"}],
         [{"text": t(lang, "check_status_btn"), "callback_data": "user:check_status"},
-         {"text": t(lang, "cancel_btn"), "callback_data": "user:cancel"}],
-        [{"text": t(lang, "lang_btn"), "callback_data": "user:lang"}],
+         {"text": t(lang, "lang_btn"),         "callback_data": "user:lang"}],
+        [{"text": t(lang, "cancel_btn"),       "callback_data": "user:cancel"}],
     ]}
 
 def main_keyboard(lang="en"):
+    """Clean 2-column grid; Cancel + Language on the last row."""
     buttons = list(API_CONFIG.keys())
     keyboard = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
-    keyboard.append([t(lang, "deactivate_btn"), t(lang, "cancel_btn")])
+    # If the last row only had one item, pair it up nicely
+    if len(keyboard[-1]) == 1:
+        keyboard[-1].append(t(lang, "cancel_btn"))
+    else:
+        keyboard.append([t(lang, "cancel_btn")])
     keyboard.append([t(lang, "lang_btn")])
     return {"keyboard": keyboard, "resize_keyboard": True, "one_time_keyboard": False}
 
 def language_keyboard():
+    """Two columns, grouped left→right."""
     items = list(LANGUAGES.items())
     rows = []
     for i in range(0, len(items), 2):
@@ -783,58 +790,69 @@ def language_keyboard():
     return {"inline_keyboard": rows}
 
 def currency_inline_keyboard(results):
-    rows = [[{"text": f"{c['code'].upper()} — {c['name']}", "callback_data": f"cur:{c['code']}"}] for c in results]
-    rows.append([{"text": "❌ Cancel", "callback_data": "cur:cancel"}])
+    """Friendly currency rows with a Cancel at the bottom."""
+    rows = []
+    for c in results:
+        code = c["code"].upper()
+        name = c["name"] or code
+        rows.append([{"text": f"◈  {code}  —  {name}", "callback_data": f"cur:{c['code']}"}])
+    rows.append([{"text": "❌  Cancel", "callback_data": "cur:cancel"}])
     return {"inline_keyboard": rows}
 
 def popular_currency_keyboard(plan_id, lang="en"):
+    """Tidy 3-per-row popular currency grid with Search / Back / Cancel."""
     rows, row = [], []
     for code in POPULAR_CODES:
-        row.append({"text": code.upper(), "callback_data": f"plan:{plan_id}:{code}"})
+        label = prettify_currency(code) if code.startswith("usdt") else code.upper()
+        row.append({"text": f"◈ {label}", "callback_data": f"plan:{plan_id}:{code}"})
         if len(row) == 3:
             rows.append(row); row = []
     if row: rows.append(row)
-    rows.append([{"text": t(lang, "search_currency"), "callback_data": f"search:{plan_id}"},
-                 {"text": t(lang, "back"), "callback_data": "back:plans"}])
+    rows.append([
+        {"text": t(lang, "search_currency"), "callback_data": f"search:{plan_id}"},
+        {"text": t(lang, "back"),            "callback_data": "back:plans"},
+    ])
+    rows.append([{"text": t(lang, "cancel_btn"), "callback_data": "user:cancel"}])
     return {"inline_keyboard": rows}
 
 # ============================================================
-# ADMIN KEYBOARDS
+# ADMIN KEYBOARDS — polished
 # ============================================================
 def admin_main_keyboard():
     return {"inline_keyboard": [
-        [{"text": "👥 Users",       "callback_data": "admin:list"},
-         {"text": "📊 Stats",       "callback_data": "admin:stats"}],
-        [{"text": "🎁 Activate User", "callback_data": "admin:activate_help"},
-         {"text": "❌ Revoke",       "callback_data": "admin:revoke_help"}],
-        [{"text": "🚫 Banned",      "callback_data": "admin:banned"},
-         {"text": "🟢 Online",      "callback_data": "admin:online"}],
-        [{"text": "👑 Admins",      "callback_data": "admin:admins"},
-         {"text": "📜 Logs",        "callback_data": "admin:logs"}],
-        [{"text": "💰 Revenue",     "callback_data": "admin:revenue"},
-         {"text": "📁 View DB",     "callback_data": "admin:db"}],
-        [{"text": "📢 Broadcast",   "callback_data": "admin:broadcast"},
-         {"text": "🧹 Remove All",  "callback_data": "admin:remove_all"}],
-        [{"text": "🛠 Maintenance", "callback_data": "admin:maintenance"},
-         {"text": "🆔 Who Am I",    "callback_data": "admin:whoami"}],
+        [{"text": "👥  Users",         "callback_data": "admin:list"},
+         {"text": "📊  Stats",         "callback_data": "admin:stats"}],
+        [{"text": "🎁  Activate User", "callback_data": "admin:activate_help"},
+         {"text": "❌  Revoke",        "callback_data": "admin:revoke_help"}],
+        [{"text": "🚫  Banned",        "callback_data": "admin:banned"},
+         {"text": "🟢  Online",        "callback_data": "admin:online"}],
+        [{"text": "👑  Admins",        "callback_data": "admin:admins"},
+         {"text": "📜  Logs",          "callback_data": "admin:logs"}],
+        [{"text": "💰  Revenue",       "callback_data": "admin:revenue"},
+         {"text": "📁  View DB",       "callback_data": "admin:db"}],
+        [{"text": "📢  Broadcast",     "callback_data": "admin:broadcast"},
+         {"text": "🧹  Remove All",    "callback_data": "admin:remove_all"}],
+        [{"text": "🛠  Maintenance",   "callback_data": "admin:maintenance"},
+         {"text": "🆔  Who Am I",      "callback_data": "admin:whoami"}],
     ]}
 
 def admin_admins_keyboard():
     return {"inline_keyboard": [
-        [{"text": "➕ Add Admin",    "callback_data": "admin:add_admin"}],
-        [{"text": "➖ Remove Admin", "callback_data": "admin:remove_admin"}],
-        [{"text": "📋 List Admins",  "callback_data": "admin:list_admins"}],
-        [{"text": "🔙 Back",         "callback_data": "admin:back"}],
+        [{"text": "➕  Add Admin",     "callback_data": "admin:add_admin"}],
+        [{"text": "➖  Remove Admin",  "callback_data": "admin:remove_admin"}],
+        [{"text": "📋  List Admins",   "callback_data": "admin:list_admins"}],
+        [{"text": "🔙  Back",          "callback_data": "admin:back"}],
     ]}
 
 def admin_plan_picker_keyboard(target_uid, mode="set"):
     rows = []
     for pid, p in PLANS.items():
-        label = f"{p['name']} · {p['days']}d · ${p['price_usd']:.0f}"
+        emoji = PLAN_EMOJI.get(pid, "💎")
+        label = f"{emoji}  {p['name']}  ·  {p['days']}d  ·  ${p['price_usd']:.0f}"
         rows.append([{"text": label, "callback_data": f"admin:do_activate:{target_uid}:{pid}:{mode}"}])
     rows.append([
-        {"text": "✏️ Custom days", "callback_data": f"admin:custom_activate:{target_uid}:{mode}"},
-        {"text": "❌ Cancel",      "callback_data": "admin:back"},
+        {"text": "✏️  Custom days", "callback_data": f"admin:custom_activate:{target_uid}:{mode}"},
+        {"text": "❌  Cancel",      "callback_data": "admin:back"},
     ])
     return {"inline_keyboard": rows}
 
@@ -1152,13 +1170,6 @@ def process_update(update):
                        keyboard=payment_inline_keyboard(lang))
         return
 
-    if is_button(text, "deactivate_btn", lang):
-        if chat_id in ACTIVATED_USERS:
-            del ACTIVATED_USERS[chat_id]; save_activation_data()
-        USER_STATE.pop(chat_id, None)
-        send_photo(chat_id, PAYMENT_IMG, caption=t(lang, "deactivated_msg"),
-                   keyboard=payment_inline_keyboard(lang)); return
-
     state = USER_STATE.get(chat_id, {})
     if state.get("flow") == "search_currency":
         results = find_currencies(text, limit=12)
@@ -1271,7 +1282,8 @@ def fmt_user_line(uid):
 def plans_summary_text():
     lines = ["📦 <b>Available plans</b>"]
     for pid, p in PLANS.items():
-        lines.append(f"• <code>{pid}</code> — {p['name']} ({p['days']}d, ${p['price_usd']:.0f})")
+        emoji = PLAN_EMOJI.get(pid, "💎")
+        lines.append(f"• {emoji} <code>{pid}</code> — {p['name']} ({p['days']}d, ${p['price_usd']:.0f})")
     lines.append("\nUsage: <code>/activate USER_ID</code> or <code>/activate USER_ID plan_1</code>")
     lines.append("Extend instead of reset: add <code>extend</code> at the end.")
     lines.append("Custom days: <code>/activate USER_ID custom 45</code>")
@@ -1417,9 +1429,9 @@ def process_admin_callback(bot_number, cb):
             admin_answer_callback(bot_number, cb_id, "⛔ Owner only"); return
         admin_answer_callback(bot_number, cb_id)
         kb = {"inline_keyboard": [
-            [{"text": "🟢 Turn ON",  "callback_data": "admin:maintenance_on"}],
-            [{"text": "🔴 Turn OFF", "callback_data": "admin:maintenance_off"}],
-            [{"text": "🔙 Back",     "callback_data": "admin:back"}],
+            [{"text": "🟢  Turn ON",  "callback_data": "admin:maintenance_on"}],
+            [{"text": "🔴  Turn OFF", "callback_data": "admin:maintenance_off"}],
+            [{"text": "🔙  Back",     "callback_data": "admin:back"}],
         ]}
         admin_send_message(bot_number, chat_id,
             f"🛠 <b>MAINTENANCE MODE</b>\nCurrent: <b>{'ON' if MAINTENANCE_MODE else 'OFF'}</b>",
@@ -2217,10 +2229,6 @@ def self_ping_loop():
 # MAIN
 # ============================================================
 def main():
-    # 🔧 FIX: Start Flask AFTER all @app.route(...) decorators have run.
-    # Every route in this file (including /nowpayments_webhook) is registered
-    # at import time. Starting the server here prevents:
-    #   AssertionError: The setup method 'route' can no longer be called
     threading.Thread(target=run_server, daemon=True).start()
 
     load_activation_data()
